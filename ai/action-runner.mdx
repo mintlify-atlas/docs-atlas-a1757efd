@@ -3,7 +3,7 @@ title: Action Runner
 description: How GenieHelper gets reliable automation out of 7B models — the ACTION tag interception pattern that bypasses LLM tool-calling limitations with a deterministic 14-step execution layer.
 ---
 
-The Action Runner is the bridge between what a 7B language model can reliably produce and what a production automation system actually needs. This page explains why it exists, how it works end-to-end, and what each of its 14 step types does.
+The Action Runner is the bridge between what a 7B language model can reliably produce and what a production automation system actually needs. This page explains why it exists, how it works end-to-end, and what each of its 20 step types does.
 
 ## Why it exists
 
@@ -36,7 +36,7 @@ Agent response stream
                                           │
                                           ▼
                                  Execute steps sequentially
-                                 (14 step types, 120s timeout each)
+                                 (20 step types, 120s timeout each)
                                           │
                                           ▼
                                  Return { success, results }
@@ -116,7 +116,7 @@ The following flows are seeded in the `action_flows` collection at install time:
 | `memory-recall` | Activate relevant skills via JIT hydration |
 | `media-process` | Enqueue a media job (watermark, clip, thumbnail) |
 
-## The 14 step types
+## The 20 step types
 
 Step executors live in `server/utils/actionRunner/stepExecutors.js`. Each executor receives a `config` object (with interpolated variables) and an `AbortSignal` for the 120-second timeout.
 
@@ -287,6 +287,93 @@ Step executors live in `server/utils/actionRunner/stepExecutors.js`. Each execut
     {
       "type": "stagehand_close",
       "config": { "sessionId": "$browser.sessionId" }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="stagehand_cookie_login — authenticate using stored cookies">
+    Decrypts the stored AES-256-GCM credentials for a creator profile, injects the cookies into a new browser session, and navigates to the target platform URL. Returns `{ sessionId, navigated: true }`.
+
+    ```json
+    {
+      "type": "stagehand_cookie_login",
+      "result_key": "session",
+      "config": {
+        "creator_profile_id": "$input.creator_profile_id",
+        "platform": "onlyfans",
+        "target_url": "https://onlyfans.com/my/statistics"
+      }
+    }
+    ```
+
+    Used in scrape flows instead of `stagehand_start` + `stagehand_navigate` when authenticated sessions are required.
+  </Accordion>
+
+  <Accordion title="stagehand_extract_cached — extract with cache check">
+    Like `stagehand_extract` but checks `extractCache` first. Returns the cached result if the (sessionId, instruction) pair was recently extracted, otherwise performs a live extraction and caches the result.
+
+    ```json
+    {
+      "type": "stagehand_extract_cached",
+      "result_key": "stats",
+      "config": {
+        "sessionId": "$session.sessionId",
+        "instruction": "Extract subscriber count and total earnings",
+        "schema": { "subscribers": "number", "earnings": "string" }
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="ollama_chat — multi-turn conversation">
+    Runs a multi-turn chat completion through Ollama. Use this instead of `ollama_generate` when conversation history matters.
+
+    ```json
+    {
+      "type": "ollama_chat",
+      "result_key": "reply",
+      "config": {
+        "model": "dolphin-mistral:7b",
+        "messages": [
+          { "role": "system", "content": "Write in the creator's voice." },
+          { "role": "user", "content": "$input.fan_message" }
+        ]
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="taxonomy_terms_read — cached taxonomy lookup">
+    Reads taxonomy terms for a given platform from `taxonomyCache`. Faster than `directus_read` on `taxonomy_mapping` for hot-path flows because it bypasses Directus and reads the in-process cache.
+
+    ```json
+    {
+      "type": "taxonomy_terms_read",
+      "result_key": "terms",
+      "config": { "platform": "onlyfans" }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="taxonomy_platform_maps_read — cached platform taxonomy maps">
+    Reads platform-to-taxonomy mapping for a given platform from `taxonomyCache`.
+
+    ```json
+    {
+      "type": "taxonomy_platform_maps_read",
+      "result_key": "maps",
+      "config": { "platform": "fansly" }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="taxonomy_invalidate — bust the taxonomy cache">
+    Invalidates the in-process taxonomy cache. Call this after a taxonomy graph rebuild or bulk ingest to force the next request to re-read from Directus.
+
+    ```json
+    {
+      "type": "taxonomy_invalidate",
+      "config": {}
     }
     ```
   </Accordion>

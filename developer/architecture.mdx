@@ -168,7 +168,7 @@ flowchart TD
 
     subgraph ACTION["Action Runner"]
         Intercept["ACTION tag interceptor\n[ACTION:slug:{params}]"]
-        Runner["14 step types\ndirectus_read/write\nstagehand_act\nollama_generate\nbullmq_enqueue"]
+        Runner["20 step types\ndirectus_read/write\nstagehand_act\nollama_generate\nbullmq_enqueue"]
     end
 
     Request --> CORS
@@ -216,22 +216,30 @@ Small open-weight models (7B–8B) cannot reliably call structured JSON tool sch
 
 When `genieChat.js` detects an ACTION tag in the LLM stream, it pauses SSE forwarding, loads the matching flow from `action_flows`, and hands off to the Action Runner (`server/utils/actionRunner/`). The runner executes the flow step-by-step. Results are injected back into the stream as a structured event before SSE forwarding resumes.
 
-### 14 step types
+### 20 step types
 
 | Step type | What it does |
 |---|---|
-| `directus_read` | Read items from a Directus collection (row-isolated to `req.directusUser`) |
-| `directus_write` | Create or update items in a Directus collection via MCP |
-| `directus_delete` | Delete items from a Directus collection via MCP |
-| `stagehand_act` | Issue a Playwright action via the Stagehand server |
-| `stagehand_extract` | Extract structured data from a browser session |
-| `stagehand_observe` | Observe and describe the current browser DOM state |
-| `ollama_generate` | Call the local Ollama LLM for a text generation sub-task |
-| `ollama_chat` | Multi-turn chat call to the local Ollama LLM |
-| `bullmq_enqueue` | Push a job onto a BullMQ queue; returns `jobId` |
-| `bullmq_wait` | Poll a BullMQ job until completion or timeout |
-| `mcp_tool` | Call any registered MCP tool by namespace and name |
-| `transform` | Apply a data transformation (JSONPath, template substitution) |
+| `directus_read` | Read items from a Directus collection |
+| `directus_write` | Create a new item in a Directus collection |
+| `directus_update` | PATCH an existing item by ID |
+| `directus_delete` | Delete an item from a Directus collection |
+| `directus_search` | Full-text search across a Directus collection |
+| `directus_trigger` | Fire a Directus Flow by UUID via webhook |
+| `stagehand_start` | Launch a new headless Playwright session |
+| `stagehand_navigate` | Navigate the browser session to a URL |
+| `stagehand_act` | Natural language browser action (click, type, scroll) |
+| `stagehand_extract` | Extract structured data from the current page |
+| `stagehand_close` | End and clean up a browser session |
+| `stagehand_cookie_login` | Decrypt stored credentials and inject cookies into a session |
+| `stagehand_extract_cached` | Extract with in-process cache check |
+| `ollama_generate` | Single-turn LLM completion via local Ollama |
+| `ollama_chat` | Multi-turn chat completion via local Ollama |
+| `taxonomy_terms_read` | Cached read of taxonomy terms for a platform |
+| `taxonomy_platform_maps_read` | Cached read of platform-to-taxonomy mappings |
+| `taxonomy_invalidate` | Bust the in-process taxonomy cache |
+| `bullmq_enqueue` | Push a media job onto a BullMQ queue |
+| `http_request` | Arbitrary HTTP request (webhooks, internal API calls) |
 | `condition` | Branch the flow based on a boolean expression |
 | `http_request` | Make an outbound HTTP request (internal services only) |
 

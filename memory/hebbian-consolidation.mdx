@@ -102,7 +102,7 @@ Once implemented, `fp_growth.mjs` will scan all confirmed `user_nodes` records a
 |---|---|---|
 | `support` | ≥ 0.15 | Minimum fraction of creators where the pattern must appear |
 | `confidence` | ≥ 0.70 | Minimum conditional probability for the association |
-| `min_creator_count` | TBD | Minimum distinct creators before a pattern can promote |
+| `min_creator_count` | ≥ 3 | Minimum distinct creators where the pattern must appear before promotion |
 
 When a pattern clears all thresholds, `promote.mjs` writes it to `Nodes/Transitional/` as a candidate for promotion to `Nodes/Universe/`.
 

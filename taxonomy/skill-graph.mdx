@@ -123,8 +123,8 @@ The `memory.recall` MCP plugin exposes the skill graph to the LLM agent as a set
   <Card title="find_skills" icon="magnifying-glass">
     Tag-based skill search. Returns all skills matching one or more comma-separated tags — useful when the agent knows what kind of skill it needs but not the exact name.
   </Card>
-  <Card title="get_correlations" icon="share-nodes">
-    Returns the Hebbian correlation neighbors of a named skill — other skills that are frequently activated together with it. Useful for surfacing related context the agent might not have explicitly requested.
+  <Card title="memory_recall" icon="database">
+    Full retrieval pipeline returning context chunks ready for LLM prompt injection. Combines BM25 sparse search, DuckDB dense activation, RRF fusion, synaptic propagation, and entropy pruning. Takes a query string and optional `max_tokens` budget.
   </Card>
 </CardGroup>
 
@@ -241,6 +241,6 @@ python3 memory/core/ingest_skills.py
     Nightly edge weight decay and the cross-user pattern promotion pipeline
   </Card>
   <Card title="memory.recall MCP plugin" icon="tool" href="/developer/mcp/memory-recall">
-    Full reference for activate_skills, get_skill, find_skills, get_correlations
+    Full reference for activate_skills, memory_recall, get_skill, find_skills
   </Card>
 </CardGroup>

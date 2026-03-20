@@ -53,21 +53,28 @@ GenieHelper runs on infrastructure you subscribe to — not infrastructure owned
 | **AI chat (local Ollama models)** | ✓ | ✓ | ✓ | ✓ |
 | **Creator persona system** | ✓ | ✓ | ✓ | ✓ |
 | **Content boundaries & monetization profiles** | ✓ | ✓ | ✓ | ✓ |
-| **Platform connections** | 1 | Multi | Multi | Multi |
-| **Supported platforms** | 1 of 4 | All 4 | All 4 | All 4 |
-| **AI caption & message drafting** | Limited | ✓ | ✓ | ✓ |
-| **Post scheduling queue** | Limited | ✓ | ✓ | ✓ |
-| **Fan CRM (basic)** | — | ✓ | ✓ | ✓ |
-| **Fan CRM (advanced — 71 fields)** | — | — | ✓ | ✓ |
-| **Fan memory injection** | — | ✓ | ✓ | ✓ |
-| **Per-fan voice personas** | — | — | ✓ | ✓ |
-| **Automation rules** | — | — | ✓ | ✓ |
-| **Dynamic audience segments** | — | — | ✓ | ✓ |
-| **Media pipeline** | — | ✓ | ✓ | ✓ |
-| **Watermarking & steganographic leak tracing** | — | ✓ | ✓ | ✓ |
-| **Custom content request tracking** | — | ✓ | ✓ | ✓ |
-| **Campaign management & ROI tracking** | — | — | ✓ | ✓ |
+| **Platform connections** | 1 | 3 | 6 | Unlimited |
+| **AI posts (AI-assisted)** | 3/mo | 30/mo | 150/mo | Unlimited |
+| **Posts published** | 5/mo | 90/mo | Unlimited | Unlimited |
+| **Post scheduling queue** | 3 slots | Unlimited | Unlimited | Unlimited |
+| **AI caption generation** | — | 30/mo | Unlimited | Unlimited |
+| **AI fan reply drafting** | — | 100/mo | Unlimited | Unlimited |
+| **Auto-schedule suggestions** | — | — | ✓ | ✓ |
+| **Bulk scheduling** | — | — | ✓ | ✓ |
+| **Fan CRM (basic insights)** | — | ✓ | ✓ | ✓ |
+| **Fan CRM (full — 71 fields)** | — | — | ✓ | ✓ |
+| **Fan audience segments** | — | — | ✓ | ✓ |
+| **Automation rules (PPV upsell, fan replies)** | — | — | ✓ | ✓ |
+| **Content idea generator** | — | — | ✓ | ✓ |
+| **Media watermarking & metadata scrubbing** | ✓ | ✓ | ✓ | ✓ |
+| **Steganographic leak-tracing watermark** | — | ✓ | ✓ | ✓ |
+| **AI clip operations** | — | 10/mo | 50/mo | Unlimited |
+| **Geo-blocking & face masking** | — | — | ✓ | ✓ |
+| **Basic analytics** | — | ✓ | ✓ | ✓ |
+| **Advanced analytics & CSV export** | — | — | ✓ | ✓ |
+| **Burnout alert** | — | — | ✓ | ✓ |
 | **HITL approval queue** | ✓ | ✓ | ✓ | ✓ |
+| **Team seats** | 1 | 1 | 1 | 5 |
 | **Multi-account / agency operations** | — | — | — | ✓ |
 | **Admin impersonation** | — | — | — | ✓ |
 
@@ -81,9 +88,9 @@ GenieHelper runs on infrastructure you subscribe to — not infrastructure owned
 
 ### Starter — Free
 
-Starter is a genuine trial tier, not a crippled version designed to frustrate you into upgrading. You get the AI chat backed by local Ollama models (Dolphin 3 8B + Qwen 2.5), the creator persona setup, and enough scheduling capacity to understand how the queue works.
+Starter is a genuine trial tier. You get AI chat backed by local Ollama models (Dolphin 3 8B + Qwen 2.5), creator persona setup, content boundary configuration, and enough scheduling capacity (3 AI-assisted posts, 5 published posts, 3-slot queue) to understand how the platform works.
 
-What Starter doesn't include: multi-platform connections, the fan CRM, the media pipeline, or automation rules. If those matter to your workflow — and they will — Creator is the right starting point.
+What Starter doesn't include: AI caption generation, fan reply drafting, multi-platform connections (limited to 1), the fan CRM, steganographic watermarking, or automation rules. Creator is the right starting point for working creators.
 
 ---
 
@@ -91,12 +98,12 @@ What Starter doesn't include: multi-platform connections, the fan CRM, the media
 
 Creator unlocks the full operational stack for a solo creator:
 
-- **Multi-platform connections** across OnlyFans, Fansly, Instagram, and TikTok. Stats scrape automatically; fan profiles are created and linked across platforms.
-- **AI drafting** for captions, fan messages, and post concepts — written in your voice using the persona you define during onboarding.
-- **Post scheduling queue** with AI-suggested timing and BullMQ-backed reliability. Posts don't drop.
-- **Fan CRM** — per-fan profiles with subscription lifecycle events, purchase history, durable fan memories (preferences, anniversaries, past conversation facts), and automatic fan scoring.
-- **Media pipeline** — watermarking, teaser clipping, thumbnail generation, and metadata sanitization via local FFmpeg. Nothing goes to an external service.
-- **Steganographic leak tracing** — every piece of purchased media gets a fan-specific invisible watermark at delivery time. If a file leaks, the watermark identifies exactly which fan's purchase it came from.
+- **Up to 3 platform connections** (OnlyFans, Fansly, Instagram, TikTok). Stats scrape automatically; fan profiles are created and linked across platforms.
+- **AI caption generation** (30/mo) and **fan reply drafting** (100/mo) — written in your voice using the persona you define during onboarding.
+- **Post scheduling queue** (unlimited slots, up to 90 posts/mo published) with BullMQ-backed reliability.
+- **Fan CRM (basic)** — per-fan profiles with subscription lifecycle events, purchase history, durable fan memories (preferences, anniversaries, past conversation facts), and basic fan insights. Advanced segments and full 71-field CRM require Pro.
+- **Media pipeline** — watermarking, steganographic leak-tracing (10 AI clip operations/mo), thumbnail generation, and metadata sanitization via local FFmpeg.
+- **Basic analytics** — earnings by period and platform, post performance snapshots.
 
 ---
 

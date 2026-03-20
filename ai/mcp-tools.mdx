@@ -268,23 +268,26 @@ The JIT skill hydration interface to the DuckDB skill graph (`memory/core/agent_
 
 | Tool | Description |
 |---|---|
-| `activate_skills` | Run stimulus propagation from a task description — returns top-N relevant skill keys |
-| `get_skill` | Fetch the full content of a skill by key |
-| `find_skills` | Search skills by keyword or category |
-| `get_correlations` | Get skills that frequently co-activate with a given skill |
+| `activate_skills` | Run stimulus propagation from a task description — returns top-N relevant skill keys with scores |
+| `memory_recall` | Full retrieval pipeline returning context chunks ready for LLM prompt injection (BM25 + dense + RRF + synaptic + entropy) |
+| `get_skill` | Fetch the full content of a skill by name from DuckDB |
+| `find_skills` | Search skills by comma-separated tags |
 
 ```javascript
 // Typical session start sequence
 const skills = await mcp.call('activate_skills', {
-  task: 'scrape OnlyFans stats and draft a post',
-  top_n: 8
+  query: 'scrape OnlyFans stats and draft a post',
 });
 
-for (const skillKey of skills) {
-  const skill = await mcp.call('get_skill', { key: skillKey });
+for (const skill of skills.activated_skills) {
+  const content = await mcp.call('get_skill', { name: skill.name });
   // Inject skill content into agent system prompt
 }
 ```
+
+<Note>
+  `get_correlations` exists as a `surgical_context.py` CLI command (`python3 memory/core/surgical_context.py get_correlations <skill-name>`) but is not exposed as an MCP tool. Use `find_skills` for tag-based discovery or `activate_skills` for task-based retrieval.
+</Note>
 
 ---
 
