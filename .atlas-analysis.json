@@ -1,0 +1,155 @@
+{
+  "projectType": "saas",
+  "projectName": "GenieHelper",
+  "projectDescription": "A self-hosted, subscription-based AI business manager for adult content creators that automates fan engagement, multi-platform management, content scheduling, and analytics — with all data and inference running on private infrastructure.",
+  "theme": "palm",
+  "primaryColor": "#7C3AED",
+  "lightColor": "#A78BFA",
+  "darkColor": "#4C1D95",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Overview",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "pricing"
+            ]
+          },
+          {
+            "group": "Platform",
+            "pages": [
+              "platform/overview",
+              "platform/stage-ui",
+              "platform/fan-crm",
+              "platform/content-publishing",
+              "platform/media-pipeline",
+              "platform/analytics"
+            ]
+          },
+          {
+            "group": "Integrations",
+            "pages": [
+              "integrations/onlyfans",
+              "integrations/fansly",
+              "integrations/instagram",
+              "integrations/tiktok"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "AI & Memory",
+        "groups": [
+          {
+            "group": "AI System",
+            "pages": [
+              "ai/overview",
+              "ai/local-inference",
+              "ai/action-runner",
+              "ai/mcp-tools"
+            ]
+          },
+          {
+            "group": "Memory & Retrieval",
+            "pages": [
+              "memory/overview",
+              "memory/hyde-retrieval",
+              "memory/rrf-fusion",
+              "memory/synaptic-propagation",
+              "memory/entropy-gating",
+              "memory/hebbian-consolidation"
+            ]
+          },
+          {
+            "group": "Taxonomy",
+            "pages": [
+              "taxonomy/overview",
+              "taxonomy/skill-graph"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Developer Guide",
+        "groups": [
+          {
+            "group": "Architecture",
+            "pages": [
+              "developer/architecture",
+              "developer/tech-stack",
+              "developer/data-model",
+              "developer/auth"
+            ]
+          },
+          {
+            "group": "MCP Tools",
+            "pages": [
+              "developer/mcp/overview",
+              "developer/mcp/cms-directus",
+              "developer/mcp/ai-ollama",
+              "developer/mcp/web-stagehand",
+              "developer/mcp/media-process",
+              "developer/mcp/taxonomy-core",
+              "developer/mcp/memory-recall"
+            ]
+          },
+          {
+            "group": "API Reference",
+            "pages": [
+              "developer/api/overview",
+              "developer/api/chat",
+              "developer/api/queue",
+              "developer/api/credentials",
+              "developer/api/skills",
+              "developer/api/usage"
+            ]
+          },
+          {
+            "group": "Contributing",
+            "pages": [
+              "developer/contributing",
+              "developer/roadmap"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Multi-platform management for OnlyFans, Fansly, Instagram, TikTok from a single interface",
+    "Private AI inference via local Ollama models — zero cloud LLM dependency",
+    "Fan CRM with 71 engagement fields, per-fan memory injection, and AI-personalized replies",
+    "Advanced memory & retrieval stack: HyDE, RRF fusion, synaptic LIF propagation, Shannon entropy gating",
+    "3,205-node adult content taxonomy for automatic content classification",
+    "Steganographic watermarking for leak tracing at individual fan level",
+    "Agent-driven UI (Stage Architecture) where AI controls panel visibility via SSE events",
+    "83-tool unified MCP server across 6 namespaced plugin bundles",
+    "Automation rule engine for win-back, upsell, birthday, and re-engagement sequences",
+    "Nightly Hebbian memory consolidation with FP-Growth cross-user pattern mining"
+  ],
+  "publicApiSurface": [
+    "POST /api/genie/stream-chat — AI chat with SSE streaming and stage control events",
+    "GET/PATCH /api/onboarding — onboarding state machine management",
+    "POST /api/register — invite-gated user registration",
+    "POST /api/rbac-sync — Directus role → AnythingLLM workspace sync webhook",
+    "POST/GET /api/credentials — AES-256-GCM encrypted platform credential store",
+    "POST /api/impersonate — admin user impersonation",
+    "POST/GET /api/queue — BullMQ job enqueue and status polling",
+    "GET /api/usage — subscription tier quota read",
+    "POST /api/captions/generate — AI caption generation with quota enforcement",
+    "GET/PATCH /api/user-proxy — user profile management",
+    "GET /api/fans — fan profile data retrieval",
+    "POST /api/posts/schedule — scheduled post creation with tier quota enforcement",
+    "GET/POST /api/skills — agent skill discovery and activation via stimulus propagation",
+    "cms.directus MCP plugin — 55 tools for full Directus 11 CRUD API",
+    "ai.ollama MCP plugin — generate, chat, list-models tools",
+    "web.stagehand MCP plugin — 9 browser automation tools",
+    "media.process MCP plugin — validate, watermark, clip, thumbnail, job-status tools",
+    "taxonomy.core MCP plugin — search, tag-content, map-term, ingest-source, rebuild-graph tools",
+    "memory.recall MCP plugin — activate_skills, get_skill, find_skills, get_correlations tools"
+  ]
+}
