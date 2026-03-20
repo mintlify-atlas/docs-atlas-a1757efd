@@ -1,0 +1,256 @@
+---
+title: Technology stack
+description: Full layer-by-layer reference for every technology used in GenieHelper — inference, orchestration, data, jobs, frontend, and infrastructure.
+---
+
+GenieHelper is built entirely on open-source primitives running on a single dedicated server. There are no cloud LLM dependencies, no managed databases, and no paid CDNs. Every layer described below runs on the same IONOS machine.
+
+---
+
+## LLM inference
+
+<CardGroup cols={2}>
+  <Card title="Ollama (local)" icon="cpu">
+    All inference runs locally via Ollama. CPU-bound at approximately 4.8 GB RAM pinned for the active model. No requests leave the VPS.
+  </Card>
+  <Card title="Models" icon="brain">
+    Three models are available depending on task type. Model selection is per-workspace and per-user-tier.
+  </Card>
+</CardGroup>
+
+| Model | Quantization | Role |
+|---|---|---|
+| `dolphin3:8b-llama3.1-q4_K_M` | Q4_K_M | Orchestrator, tool planning, ACTION tag emission |
+| `dolphin-mistral:7b` | default | Uncensored content writer — captions, fan messages, post drafts |
+| `qwen2.5:latest` | default | Primary AnythingLLM agent workspace model — code, JSON, structured tasks |
+
+<Note>
+CPU inference on Qwen 2.5 7B runs at approximately 2–5 seconds per call with ~4.8 GB RAM pinned. The `poweradmin` role bypasses Ollama entirely and routes to the Anthropic Claude API when `ANTHROPIC_API_KEY` is set in `server/.env`.
+</Note>
+
+---
+
+## Agent orchestration
+
+**AnythingLLM (fork)** — `server/` — port `3001` — pm2: `anything-llm`
+
+The GenieHelper fork of AnythingLLM provides the multi-user agent runtime. Key modifications from upstream:
+
+- **Per-workspace isolation** — every creator gets their own AnythingLLM workspace provisioned at registration time via `workspaceProvisioner.js`. User-generated and scraped content is injected only into the creator's own workspace; global/onboarding docs go to the `administrator` workspace.
+- **MCP auto-boot** — `server/utils/boot/index.js` is patched to call `bootMCPServers()` on startup, which spawns `genie-mcp-server` as a stdio child process.
+- **Unified auth** — the upstream `validatedRequest.js` is patched to delegate to `unifiedAuth.js`, accepting Directus JWTs across all endpoints (both custom GenieHelper routes and AnythingLLM native routes).
+- **System prompt hydration** — `workspaceProvisioner.js` fetches the `prime_directive` from the `system_config` Directus collection (5-minute TTL cache) and injects it as the workspace system prompt.
+
+---
+
+## Unified MCP server
+
+**83 tools, 6 plugins** — `scripts/mcp/genie-mcp-server.mjs` — stdio transport
+
+All agent tools are served by a single MCP server process. No per-tool process overhead, no duplicated auth. One plugin loader, six namespaced tool bundles loaded from `storage/plugins/`.
+
+```text
+genie-mcp-server
+├── cms.directus    (55 tools) — full Directus 11 API: CRUD, users, files, flows, fields,
+│                               relations, roles, policies, permissions, settings, schema,
+│                               activity, revisions
+├── ai.ollama       (3 tools)  — generate, chat, list-models
+├── web.stagehand   (9 tools)  — browser sessions, navigate, act, extract, observe,
+│                               cookies, screenshot
+├── media.process   (5 tools)  — validate (ffprobe), watermark, clip, thumbnail, job-status
+├── taxonomy.core   (7 tools)  — search, tag-content, map-term, ingest-source,
+│                               rebuild-graph, prune, strengthen
+└── memory.recall   (4 tools)  — activate_skills, get_skill, find_skills, get_correlations
+```
+
+<Warning>
+All Directus writes from server-side business logic must go through `cms.directus` MCP tools. Direct `fetch()` calls to Directus from endpoint handlers are not permitted. The only exceptions are `register.js` and `rbacSync.js`, which are pre-auth flows that require `DIRECTUS_ADMIN_TOKEN`.
+</Warning>
+
+---
+
+## CMS and data layer
+
+**Directus 11** — `cms/` — port `8055` — pm2: `agentx-cms`
+
+Directus is the primary application data layer. All creator-owned collections are protected by item-level row filters (`user_id=$CURRENT_USER`) enforced at the Directus policy layer — data isolation does not depend on application logic.
+
+| Aspect | Detail |
+|---|---|
+| SDK pattern | Composable client: `createDirectus()` + `rest()` + `authentication()` |
+| Auth | JWT issued by Directus; validated in `unifiedAuth.js` |
+| Admin token | `DIRECTUS_ADMIN_TOKEN` — used only by `register.js` and `rbacSync.js` |
+| Service token | `MCP_SERVICE_TOKEN` — scoped token used by all other server-side reads/writes |
+| Flows limitation | The `request` operation in Directus Flows returns `{}` — this is a known upstream bug. All flow-triggered operations are routed through the MCP server instead. |
+
+---
+
+## Primary database
+
+**PostgreSQL 16** — port `5432` — Docker container — database: `impactgenie`
+
+Three PostgreSQL extensions are in active use:
+
+<CardGroup cols={2}>
+  <Card title="pgvector" icon="vector-square">
+    Stores and queries dense embedding vectors for RAG. Used by AnythingLLM workspace vector stores and the taxonomy graph backbone.
+  </Card>
+  <Card title="AGE (Apache Graph Extension)" icon="share-2">
+    Graph traversal via Cypher queries. Powers the knowledge compression architecture — 17 GB flat data compressed into ~500 MB graph representation.
+  </Card>
+  <Card title="supabase_vault" icon="lock">
+    Encrypted credential storage. Platform credentials (OnlyFans session tokens, Fansly cookies, etc.) are encrypted with AES-256-GCM before being written to the vault, and decrypted on read via `credentialsCrypto.js`.
+  </Card>
+  <Card title="Redis" icon="database">
+    Port 6379, Docker container. Backing store for BullMQ job queues and session cache.
+  </Card>
+</CardGroup>
+
+---
+
+## Job queue
+
+**BullMQ + Redis** — `media-worker/` — pm2: `media-worker`
+
+`concurrency:1` is a hard constraint, not a preference — it prevents RAM exhaustion on the 16 GB ceiling.
+
+| Queue | Jobs | Notes |
+|---|---|---|
+| `media-jobs` | `convert_image`, `resize_image`, `crop_image`, `resize_video`, `crop_video`, `compress_video`, `download_video`, `ytdlp_info`, `trim_videos`, `join_videos`, `apply_watermark`, `create_teaser`, `strip_metadata`, `apply_steganographic_watermark` | FFmpeg/ImageMagick operations |
+| `scrape-jobs` | `scrape_profile`, `publish_post`, `scrape_post_performance` | Browser automation via Stagehand |
+| `onboarding-jobs` | `onboarding:*` (5 handlers) | LLM-heavy onboarding pipeline operations |
+
+The media worker was refactored on 2026-03-15: `index.js` (previously 2000+ lines) was split into `operations/` modules — `helpers.js`, `media.js`, `scrape.js`, `publish.js`, `onboarding.js`. The `index.js` entry point is now ~310 lines covering only the OPERATIONS map, worker registration, and schedulers.
+
+Schedulers running inside the media worker process:
+
+| Scheduler | Interval | Purpose |
+|---|---|---|
+| `post_scheduler` | 60 seconds | Polls `scheduled_posts` for due items and enqueues publish jobs |
+| `scrape_scheduler` | 6 hours | Triggers profile and stat scrapes for all connected platforms |
+| `job_monitor` | 5 minutes | Detects stalled jobs and triggers retry or failure notification |
+
+---
+
+## Browser automation
+
+**Stagehand (Playwright fork)** — `stagehand/` — port `3002` — pm2: `stagehand-server`
+
+Stagehand wraps Playwright with an AI-assisted extraction layer. It handles platform scraping for OnlyFans, Fansly, Instagram, TikTok, and other platforms that block standard headless Chrome.
+
+**HITL escalation** — when Stagehand detects a login wall, CAPTCHA, or 2FA challenge it cannot resolve automatically, it writes a record to `hitl_action_queue` and emits a `scrape_alert` SSE event. The React SPA transitions the center stage to `scrape_alert` mode, prompting the creator to complete the action in the browser extension. Execution resumes when the HITL session is resolved.
+
+Available tools via `web.stagehand` MCP plugin: `browser_session_create`, `browser_navigate`, `browser_act`, `browser_extract`, `browser_observe`, `browser_screenshot`, `browser_cookies_get`, `browser_cookies_set`, `browser_session_close`.
+
+---
+
+## Frontend
+
+**React 18 + Vite + Tailwind CSS** — `dashboard/` — port `3100` — pm2: `genie-dashboard`
+
+The dashboard SPA is a static build served by `serve dashboard/dist/`. The agent-driven Stage architecture uses `StageContext` (a React reducer) to control layout — the AI opens panels, not the user.
+
+| Aspect | Detail |
+|---|---|
+| Build tool | Vite |
+| Styling | Tailwind CSS (utility-first) |
+| Router | React Router v6 |
+| Auth | Directus JWT, auto-refresh, invite-gated registration |
+| Agent widget | Custom `AgentWidget` component (replaced the upstream AnythingLLM embed widget) |
+| State | `StageContext.jsx` — reducer-driven UI layout |
+| Real-time | `sseClient.js` + `realtimeEventRouter.js` — SSE events drive stage transitions |
+
+Route map:
+
+| Visibility | Routes |
+|---|---|
+| Public | `/`, `/pricing`, `/about`, `/register`, `/login` |
+| Authenticated | `/app/dashboard`, `/app/media`, `/app/calendar`, `/app/fans`, `/app/analytics`, `/app/platforms`, `/app/settings` |
+| Admin | `/admin`, `/view-as` |
+
+---
+
+## Skill graph
+
+**DuckDB** — `memory/core/agent_memory.duckdb`
+
+| Metric | Value |
+|---|---|
+| Total skills | 191 |
+| Graph nodes | 252 |
+| Graph edges | 12,880+ |
+| Categories | 11 |
+
+Skills are not preloaded into the agent context window. At session start, `surgical_context.py activate "<task>"` runs stimulus propagation across the DuckDB graph and surfaces only the top-N skills relevant to the current task. This is called JIT (just-in-time) skill hydration.
+
+Skill operations are exposed via the `memory.recall` MCP plugin: `activate_skills`, `get_skill`, `find_skills`, `get_correlations`.
+
+---
+
+## Taxonomy graph
+
+**JSON (pgvector-backed)** — `Nodes/Universe/`
+
+| Metric | Value |
+|---|---|
+| Total nodes | 3,205 |
+| Super-concepts | 4 |
+| Backing store | pgvector embeddings in PostgreSQL |
+
+The taxonomy is the creator-content classification system — a proprietary adult content ontology. Every piece of content, every fan interaction, and every content idea is tagged against this graph. Nodes are stored as JSON files in `Nodes/Universe/` and their embeddings live in pgvector.
+
+Nightly Hebbian consolidation runs `node-decay.mjs` — recently activated nodes strengthen, dormant nodes decay. Cross-user FP-Growth pattern mining (in progress in `memory/consolidation/cross_user/`) will promote creator-specific patterns to the universal graph when they appear across multiple creator profiles.
+
+---
+
+## Memory subsystem
+
+**Python + DuckDB** — `memory/`
+
+The memory subsystem is the core differentiator from standard RAG platforms. It implements four retrieval techniques that run in sequence:
+
+| Technique | Location | What it does |
+|---|---|---|
+| **HyDE** | `memory/retrieval/` | Generates a hypothetical ideal answer and embeds that instead of the raw query — improves retrieval precision for semantically distant queries |
+| **RRF** | `memory/retrieval/rrf/` | Fuses BM25 sparse term matching with dense pgvector similarity using Reciprocal Rank Fusion |
+| **Synaptic propagation** | `memory/retrieval/synaptic/` | Retrieved seed nodes activate connected taxonomy nodes via a Leaky Integrate-and-Fire neuron model; graph edges strengthen with use (Hebbian reinforcement) |
+| **Shannon entropy gating** | `memory/retrieval/entropy/` | Before context injection, nodes are ranked by information entropy; high-redundancy nodes are evicted to maximize signal per token |
+
+CRAG (Corrective RAG) grades retrieved context for relevance before injection. Low-confidence retrievals trigger web search fallback or escalation to HITL rather than hallucinating.
+
+---
+
+## Credential encryption
+
+**AES-256-GCM** — `server/utils/credentialsCrypto.js`
+
+Platform credentials (session tokens, cookies, API keys for OnlyFans, Fansly, etc.) are encrypted per-user before storage and decrypted on read. Encryption is performed in the application layer before the data reaches PostgreSQL.
+
+```javascript
+// Encrypt before storage
+const encrypted = encryptJSON(plainCredentials, process.env.CREDENTIALS_ENC_KEY_B64);
+
+// Decrypt on retrieval
+const plain = decryptJSON(encrypted, process.env.CREDENTIALS_ENC_KEY_B64);
+```
+
+The key is a base64-encoded 256-bit value stored in `server/.env` as `CREDENTIALS_ENC_KEY_B64`. Losing this key means losing access to all stored credentials — back it up.
+
+---
+
+## Infrastructure
+
+| Aspect | Detail |
+|---|---|
+| Provider | IONOS dedicated server |
+| OS | Ubuntu 24 |
+| RAM | 16 GB (hard ceiling — all concurrency and memory allocation decisions must respect this) |
+| Storage | 1 TB NVMe |
+| Process manager | PM2 |
+| Web server | Nginx via Plesk |
+| Containers | Docker Compose for Directus + PostgreSQL + Redis |
+| LLM runtime | Ollama (systemd service, not PM2) on port 11434 |
+
+<Note>
+The 16 GB RAM ceiling is not a soft guideline. It directly determines BullMQ `concurrency:1`, the absence of a GPU (CPU inference only), and the decision to run all services on a single machine rather than splitting into microservices. Any architecture change that increases peak RAM usage must be evaluated against this ceiling before implementation.
+</Note>

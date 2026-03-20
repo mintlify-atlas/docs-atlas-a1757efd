@@ -1,0 +1,147 @@
+---
+title: 'TikTok'
+description: 'Connect your TikTok account to GenieHelper for follower tracking, video engagement analytics, and automated post scheduling.'
+---
+
+GenieHelper connects to TikTok through Stagehand — a Playwright browser automation layer that runs locally on your dedicated server. TikTok does not expose creator analytics through a freely accessible API, so GenieHelper reads stats directly from the authenticated TikTok web interface.
+
+<Note>
+  All TikTok credentials and session cookies are encrypted with AES-256-GCM and stored in your PostgreSQL vault. Credentials are decrypted only at job execution time on your server — they are never transmitted to any external system.
+</Note>
+
+## How the connection works
+
+Stagehand launches a Chromium browser on the server, navigates to your TikTok profile (`tiktok.com/@your-handle`), and extracts follower counts, video view totals, and per-video engagement metrics from the page. For publishing, Stagehand interacts with TikTok's web upload interface.
+
+TikTok's anti-automation detection is sophisticated. The integration uses realistic browser fingerprints and cookie injection to minimize detection surface, but HITL challenges are expected — particularly on fresh account connections.
+
+<Warning>
+  TikTok aggressively detects headless Chrome and will present CAPTCHA challenges, require SMS/email verification, or flag the account for suspicious activity if it detects automation. When a challenge occurs, the scrape job escalates to the **HITL queue** (`hitl_action_queue`). You must complete the verification manually and provide updated session cookies. Repeated failed login attempts can result in temporary account restrictions.
+</Warning>
+
+## Authentication
+
+TikTok supports email/password login and cookie-only auth in the connect flow.
+
+- **Email / Password**: GenieHelper attempts to log in with your TikTok email and password. Your profile `@handle` is stored separately as the profile URL identifier.
+- **Cookie only**: Recommended for TikTok. You log in manually in your browser and export session cookies via the GenieHelper extension. No password is stored, and the risk of triggering bot detection during login is eliminated.
+
+## Setup
+
+<Steps>
+  <Step title="Open Platform Connections">
+    Navigate to **Platforms** in the left nav rail. Click **Add Platform**.
+  </Step>
+  <Step title="Select TikTok">
+    Choose TikTok from the platform grid. You can connect multiple platforms in the same session.
+  </Step>
+  <Step title="Choose your auth method">
+    **Cookie only** is strongly recommended for TikTok. If you choose Email/Password, be prepared for a HITL alert on the first scrape if TikTok presents a verification challenge.
+  </Step>
+  <Step title="Enter your details">
+    For cookie-only: enter your `@handle` only (no password stored). For email/password: enter your handle, login email, and password. All credential values are AES-256-GCM encrypted before saving.
+  </Step>
+  <Step title="Save and provide cookies">
+    After saving the connection, log in to TikTok in your own browser and use the GenieHelper browser extension to export your session cookies. Import them in the **Cookie Sessions** tab. This pre-loads a valid session before the first scrape runs and avoids the login flow entirely.
+  </Step>
+  <Step title="Trigger an initial scrape">
+    Click **Scrape Now** on your TikTok profile card. GenieHelper will inject your session cookies and extract your profile stats and recent video metrics.
+  </Step>
+</Steps>
+
+## Data collected
+
+The `scrape_profile` job extracts the following from your TikTok profile:
+
+| Field | Source | Collection |
+|---|---|---|
+| Follower count | Profile page DOM | `platform_connections` |
+| Following count | Profile page DOM | `platform_connections` |
+| Post count (video count) | Profile page DOM | `platform_connections` |
+| Display name | Profile page DOM | `platform_connections` |
+| Bio text | Profile page DOM | `platform_connections` |
+| Verification status | Profile page DOM | `platform_connections` |
+| Video caption | Per-video extraction | `media_assets` |
+| Likes per video | Per-video extraction | `media_assets` |
+| Comments per video | Per-video extraction | `media_assets` |
+| Posted date | Per-video extraction | `media_assets` |
+
+The `scrape_post_performance` job records live engagement snapshots for individual videos:
+
+| Metric | Collection |
+|---|---|
+| Likes | `post_performance_snapshots` |
+| Comments | `post_performance_snapshots` |
+| Views | `post_performance_snapshots` |
+
+<Info>
+  TikTok's Creator Studio surfaces additional metrics (saves, shares, traffic source breakdown, audience demographics) that are only available when logged into the TikTok app or Creator Studio interface. These metrics are not currently extracted by the browser scraper.
+</Info>
+
+## Publishing
+
+GenieHelper can schedule and publish video posts to TikTok via Stagehand browser automation. The `publish_post` BullMQ job navigates to TikTok's web upload interface and submits the post.
+
+<Warning>
+  Automated video publishing to TikTok is high-risk from a bot-detection standpoint. TikTok closely monitors upload behavior. Use Cookie only auth with a fresh, manually-established session for any publishing operations. Respect TikTok's content policies — automated posting of content that violates community guidelines will result in account action regardless of whether it is detected as automated.
+</Warning>
+
+**Current publishing status:** TikTok automated posting is a planned capability (tracked under the H-series sprint). The `publish_post` job currently marks TikTok as `unsupported` — jobs are queued but will not execute. Session management and scraping are fully operational.
+
+## Rate limits and safe usage
+
+TikTok's rate limiting is session-based and behavioral:
+
+- The default `runScrapeScheduler` runs every 6 hours — this is a safe interval for profile stats
+- Scraping individual video metrics more frequently than once per hour is not recommended
+- If TikTok shows a "Too many requests" page or presents a CAPTCHA, back off for at least 30 minutes before retrying
+- Accounts that trigger verification repeatedly may be shadow-restricted — monitor your actual reach if you notice drops in video performance after enabling automation
+
+## Session management
+
+TikTok session cookies are stored encrypted in `platform_sessions`:
+
+- Cookies are serialized to JSON and encrypted with AES-256-GCM using the same envelope format (`v1:iv:tag:ciphertext`) as all other credentials
+- Active TikTok sessions are listed in the **Cookie Sessions** tab in Platform Connections
+- Revoking a session in GenieHelper does not log you out of TikTok — it removes the stored cookies so the next scrape must re-authenticate
+- TikTok session cookies expire periodically; when they expire, the next scrape escalates to HITL
+
+To refresh expired TikTok cookies:
+
+1. Log in to TikTok in your browser normally
+2. Export cookies using the GenieHelper extension, or copy the cookie string
+3. Import them in the Cookie Sessions tab
+4. The next scrape will use the fresh session automatically
+
+## Connection health monitoring
+
+The `platform_health_checks` collection records the result of each scrape. The Platform Connections profile card reflects the current status:
+
+| Status | Meaning |
+|---|---|
+| `connected` | Last scrape completed successfully |
+| `scraping` | A scrape job is running |
+| `hitl_required` | TikTok presented a challenge — your action is needed |
+| `failed` | Last scrape failed |
+| `pending_connection` | Profile saved, no successful scrape yet |
+
+## Resolving HITL alerts
+
+<Steps>
+  <Step title="Open the alert">
+    The dashboard Center Stage switches to `scrape_alert` mode. The alert shows what TikTok displayed (CAPTCHA, verification code, etc.).
+  </Step>
+  <Step title="Complete the challenge manually">
+    Open TikTok in your browser. If TikTok is requesting a CAPTCHA or verification code, complete it until you are fully logged in.
+  </Step>
+  <Step title="Export fresh session cookies">
+    Use the GenieHelper browser extension to export your TikTok cookies, or paste the cookie header string in the **Cookie Sessions** tab.
+  </Step>
+  <Step title="Re-trigger the scrape">
+    Click **Scrape Now** on your TikTok profile card. GenieHelper injects the fresh cookies, bypasses the login flow, and completes the scrape.
+  </Step>
+</Steps>
+
+<Tip>
+  For TikTok, always start with **Cookie only** auth. Providing valid session cookies before the first scrape runs means GenieHelper never needs to touch the TikTok login page — dramatically reducing the chance of a bot-detection challenge.
+</Tip>

@@ -1,0 +1,249 @@
+---
+title: "Skills"
+description: "GET/POST /api/skills — agent skill discovery, search, and stimulus propagation."
+---
+
+The skills API provides access to GenieHelper's agent skill graph — 191 procedural knowledge modules organized across 11 categories in a DuckDB-backed graph. Skills are used by both the Genie chat agent and Goose CLI to select the most relevant expertise for a given task.
+
+## Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/skills` | List all skills with filtering and pagination |
+| `GET` | `/api/skills/:id` | Fetch a single skill by UUID or name |
+| `POST` | `/api/skills/activate` | Stimulus propagation: find best skills for a task |
+| `POST` | `/api/skills/search` | Full-text skill search |
+| `GET` | `/api/skills/:id/related` | Get related skills for a given skill |
+
+<Note>
+  Skills are stored in the `agent_skills` Directus collection and served via the `serviceClient` (MCP_SERVICE_TOKEN). No user auth is required to read skills — the collection is read-accessible to the service token.
+</Note>
+
+---
+
+## GET /api/skills
+
+Returns a paginated, filterable list of all agent skills.
+
+```http
+GET /api/skills?category=01-core-development&limit=20
+```
+
+### Query parameters
+
+<ParamField query="category" type="string">
+  Filter by skill category. See the categories table below for valid values.
+</ParamField>
+
+<ParamField query="tags" type="string">
+  Comma-separated list of tags to filter by. Returns skills that have any of the listed tags.
+  Example: `tags=authentication,jwt,express`
+</ParamField>
+
+<ParamField query="limit" type="number">
+  Number of results to return. Default: `50`. Maximum: `500`.
+</ParamField>
+
+<ParamField query="offset" type="number">
+  Pagination offset. Default: `0`.
+</ParamField>
+
+<ParamField query="sort" type="string">
+  Sort field. Default: `-date_updated` (most recently updated first).
+</ParamField>
+
+### Response
+
+```json
+{
+  "success": true,
+  "data": [
+    {
+      "id": "7a3f2c1b-...",
+      "name": "backend-developer",
+      "category": "01-core-development",
+      "description": "Expert in Express, Node.js, REST API design, and Prisma ORM",
+      "tags": ["express", "node", "rest", "prisma"],
+      "content": "You are a backend developer...",
+      "activation_score": 0.92,
+      "date_updated": "2026-03-13T10:22:00Z"
+    }
+  ],
+  "meta": {
+    "total_count": 191,
+    "filter_count": 12
+  }
+}
+```
+
+---
+
+## GET /api/skills/:id
+
+Returns a single skill by UUID or by name slug.
+
+```http
+GET /api/skills/backend-developer
+GET /api/skills/7a3f2c1b-4d5e-6f78-90ab-cdef01234567
+```
+
+### Query parameters
+
+<ParamField query="include_related" type="boolean">
+  When `true`, the response includes a `related_skills` array with abbreviated records for each related skill. Default: `false`.
+</ParamField>
+
+### Response
+
+```json
+{
+  "success": true,
+  "data": {
+    "id": "7a3f2c1b-...",
+    "name": "backend-developer",
+    "category": "01-core-development",
+    "description": "Expert in Express, Node.js, REST API design, and Prisma ORM",
+    "tags": ["express", "node", "rest", "prisma"],
+    "concepts": ["API design", "authentication", "database"],
+    "content": "You are a backend developer with deep expertise...",
+    "activation_score": 0.92,
+    "related_skills": [
+      {
+        "id": "8b4c3d2e-...",
+        "name": "security-auditor",
+        "description": "Security review and vulnerability analysis",
+        "category": "04-quality-security",
+        "tags": ["security", "auth", "jwt"]
+      }
+    ]
+  }
+}
+```
+
+---
+
+## POST /api/skills/activate
+
+Stimulus propagation: given a task description, finds and ranks the most relevant skills using a weighted scoring algorithm across tags, concepts, and description text.
+
+This is the primary method used by the Genie agent and Goose CLI at session start — it surfaces the most applicable skills for JIT hydration into the agent's context.
+
+```http
+POST /api/skills/activate
+Content-Type: application/json
+```
+
+### Body
+
+<ParamField body="task" type="string" required>
+  A natural-language description of the task to activate skills for. The endpoint scores all 191 skills against this description and returns the top matches.
+</ParamField>
+
+<ParamField body="limit" type="number">
+  Maximum number of skills to return. Default: `5`.
+</ParamField>
+
+```json
+{
+  "task": "Build a REST API endpoint with JWT authentication and Directus integration",
+  "limit": 5
+}
+```
+
+### Scoring algorithm
+
+Each skill receives a score based on three factors:
+
+| Signal | Weight | Method |
+|--------|--------|--------|
+| Tag match | `+0.3` per matching tag | Checks if any skill tag appears in the task string |
+| Concept match | `+0.4` per matching concept | Checks if any skill concept appears in the task string |
+| Description overlap | `+0.5` per word overlap | Tokenizes both strings, scores shared terms |
+
+Skills are sorted by score descending. The top `limit` skills are returned.
+
+### Response
+
+<ResponseField name="success" type="boolean">
+  `true` when activation ran successfully.
+</ResponseField>
+
+<ResponseField name="activated_skills" type="array">
+  Array of skill objects, sorted by relevance score descending.
+</ResponseField>
+
+```json
+{
+  "success": true,
+  "activated_skills": [
+    {
+      "id": "7a3f2c1b-...",
+      "name": "backend-developer",
+      "score": 1.4,
+      "description": "Expert in Express, Node.js, REST API design, and Prisma ORM",
+      "category": "01-core-development",
+      "tags": ["express", "node", "rest", "prisma"]
+    },
+    {
+      "id": "c9d8e7f6-...",
+      "name": "security-auditor",
+      "score": 0.9,
+      "description": "Security review and vulnerability analysis",
+      "category": "04-quality-security",
+      "tags": ["security", "auth", "jwt"]
+    }
+  ]
+}
+```
+
+---
+
+## Skill categories
+
+| Category key | Domain |
+|-------------|--------|
+| `01-core-development` | Backend, frontend, React, JavaScript, Python |
+| `02-language-specialist` | TypeScript, Node.js deep-dives |
+| `03-infrastructure` | DevOps, Docker, PM2, databases, deployment |
+| `04-quality-security` | Security auditing, code review, QA, testing |
+| `05-data-ai` | LLM architecture, prompt engineering, NLP, ML |
+| `06-developer-experience` | MCP development, documentation, Git, build tooling |
+| `07-specialized-domains` | Per-task specialist roles |
+| `08-business-product` | Content marketing, SEO, legal |
+| `09-meta-orchestration` | Multi-agent coordination, error rollup |
+| `10-research-analysis` | Research, trend analysis, market intelligence |
+| `11-genie-user-skills` | GenieHelper platform execution skills |
+
+## Skill object fields
+
+<ResponseField name="id" type="string">
+  Directus UUID for the skill record.
+</ResponseField>
+
+<ResponseField name="name" type="string">
+  Slug identifier. Used for lookup by name (e.g., `backend-developer`).
+</ResponseField>
+
+<ResponseField name="category" type="string">
+  One of the 11 category keys above.
+</ResponseField>
+
+<ResponseField name="description" type="string">
+  Short description of the skill's domain and expertise.
+</ResponseField>
+
+<ResponseField name="content" type="string">
+  The full skill prompt content injected into the agent's context window during JIT hydration.
+</ResponseField>
+
+<ResponseField name="tags" type="array">
+  Array of tag strings used for filtering and scoring.
+</ResponseField>
+
+<ResponseField name="concepts" type="array">
+  Higher-level concept terms used by the stimulus propagation scorer.
+</ResponseField>
+
+<ResponseField name="activation_score" type="number">
+  Baseline activation score (0–1). Used as a tie-breaker in stimulus propagation.
+</ResponseField>

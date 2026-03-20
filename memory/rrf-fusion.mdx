@@ -1,0 +1,137 @@
+---
+title: "RRF fusion"
+description: "How GenieHelper combines BM25 sparse keyword matching and dense vector similarity using Reciprocal Rank Fusion — no trained reranker required."
+---
+
+Retrieval Rank Fusion (RRF) is the third stage of GenieHelper's retrieval pipeline. It solves the fundamental problem with single-method retrieval: no single search method is best for all query types.
+
+## The problem with single-method retrieval
+
+**Dense vector search** (pgvector cosine similarity) excels at capturing semantic meaning. Ask "how should I price my subscription tier?" and it will surface documents about pricing strategy, value signaling, and fan psychology — even if none of those documents use the words "price" or "tier" exactly. But dense search fails on exact terminology: searching for a specific platform name, a creator handle, or a payout rate formula produces noisy results because these high-entropy tokens don't behave cleanly in embedding space.
+
+**BM25 sparse search** (keyword term frequency) excels at exact terminology. Ask about "Slushy payout rules" and BM25 finds every document containing those exact words, ranked by term frequency and document length normalization. But BM25 is blind to semantics: it can't recognize that "fan subscription renewal" and "recurring membership billing" describe the same concept.
+
+<CardGroup cols={2}>
+  <Card title="Dense vector search" icon="vector-square">
+    **Strengths:** semantic similarity, concept matching, paraphrase handling
+
+    **Weaknesses:** exact terminology, platform names, high-entropy tokens, rare terms
+  </Card>
+  <Card title="BM25 sparse search" icon="magnifying-glass-plus">
+    **Strengths:** exact term matching, platform names, creator handles, payout formulas
+
+    **Weaknesses:** semantic blind, fails on paraphrasing and concept synonyms
+  </Card>
+</CardGroup>
+
+Neither method alone is sufficient. RRF combines both.
+
+## The RRF formula
+
+RRF scores each document by summing its reciprocal rank position across all result lists:
+
+```
+RRF(d) = Σ  1 / (k + rank_i(d))
+```
+
+Where:
+- `d` is a document (node ID)
+- `rank_i(d)` is the rank of document `d` in result list `i` (1-indexed)
+- `k = 60` is the smoothing constant that prevents low-ranked items from dominating
+- The sum is taken across all result lists (dense + sparse)
+
+A document ranked #1 in both lists scores `1/(60+1) + 1/(60+1) = 0.0328`. A document ranked #1 in dense but absent from sparse scores `1/(60+1) = 0.0164`. Agreement between methods pushes documents to the top.
+
+<Info>
+  The smoothing constant `k=60` is the empirically established default from the original RRF paper (Cormack et al., 2009). It prevents documents ranked very low in one list from contributing negligible noise while allowing high-ranked documents from either method to meaningfully contribute.
+</Info>
+
+## How the two lists are built
+
+### Dense hits: semantic activation from DuckDB
+
+The dense result list is built from node activation scores in DuckDB, boosted by label overlap with the HyDE-generated hypothetical document:
+
+```python
+# memory/retrieval/rrf/hybrid_ranker.py
+def get_dense_hits(db_conn, query_words: List[str], limit: int = 20) -> List[str]:
+    rows = db_conn.execute(
+        "SELECT id, label, activation FROM nodes "
+        "WHERE activation > 0.0 ORDER BY activation DESC LIMIT ?",
+        [limit * 3],
+    ).fetchall()
+
+    scored = []
+    for nid, label, activation in rows:
+        label_l = (label or "").lower()
+        overlap = sum(1 for w in query_words if w in label_l)
+        score = float(activation or 0.0) + overlap * 0.5
+        scored.append((score, nid))
+
+    scored.sort(reverse=True)
+    return [nid for _, nid in scored[:limit]]
+```
+
+### Sparse hits: BM25 over Nodes/ JSON files
+
+BM25 indexes all `.json` node files across `Nodes/Universe/`, `Nodes/User/`, and `Nodes/Transitional/`. At query time, the raw query is tokenized and scored against the index:
+
+```
+BM25(q, d) = Σ_t  IDF(t) × (tf(t,d) × (k1+1)) / (tf(t,d) + k1 × (1 - b + b × |d|/avgdl))
+
+k1 = 1.5   (term frequency saturation)
+b  = 0.75  (document length normalization)
+```
+
+The index is built lazily at first query and cached as an in-memory singleton (`bm25_index.py:get_index()`).
+
+## RRF scoring implementation
+
+```python
+# memory/retrieval/rrf/hybrid_ranker.py — HybridRanker.rrf_score()
+def rrf_score(
+    self,
+    dense_results: List[str],
+    sparse_results: List[str],
+) -> Dict[str, float]:
+    scores: Dict[str, float] = {}
+
+    for rank, node_id in enumerate(dense_results):
+        scores[node_id] = scores.get(node_id, 0.0) + 1.0 / (self.k + rank + 1)
+
+    for rank, node_id in enumerate(sparse_results):
+        scores[node_id] = scores.get(node_id, 0.0) + 1.0 / (self.k + rank + 1)
+
+    return dict(sorted(scores.items(), key=lambda item: item[1], reverse=True))
+```
+
+The default limit is 8 top nodes returned from `get_top_node_ids()`. Full node content (label, category, type, activation) is fetched from DuckDB and attached via `get_top_context()`.
+
+## Implementation files
+
+```
+memory/retrieval/rrf/
+├── hybrid_ranker.py   ← HybridRanker class, get_dense_hits()
+├── bm25_index.py      ← BM25Index class, bm25_search() singleton wrapper
+└── __init__.py        ← exports HybridRanker, bm25_search, get_dense_hits
+```
+
+<Warning>
+  The BM25 index is built from the Nodes/ directory at runtime. If you add new node files, the in-process singleton needs to be rebuilt. Restart the retrieval service or call `BM25Index.build()` explicitly after adding nodes.
+</Warning>
+
+## Where RRF fits in the full pipeline
+
+```
+[HyDE]  → hypothetical doc embedding
+    │
+    ▼
+[Dense] pgvector cosine search  ──┐
+                                   ├─→ [RRF] merge rank lists → top-8 nodes
+[BM25]  sparse keyword search  ───┘
+    │
+    ▼
+[Synaptic] propagation from RRF seed nodes
+```
+
+The top nodes from RRF become the **seed nodes** for the synaptic propagation stage. See [Synaptic propagation](/memory/synaptic-propagation) for how those seeds are expanded into a richer context set.

@@ -1,0 +1,146 @@
+---
+title: MCP Overview
+description: Unified genie-mcp-server — 83 tools across 6 namespaced plugin bundles, loaded at boot via stdio transport.
+---
+
+GenieHelper's agent tooling is delivered through a **single unified MCP server**: `genie-mcp-server.mjs`. It replaced three separate MCP processes (Directus, Ollama, Stagehand) in Sprint 1+2 and has grown to 83 tools across 6 plugins as of Sprint 5.
+
+## Architecture
+
+The server uses **stdio transport** and is spawned once by AnythingLLM on startup. There is no per-tool process overhead, no redundant auth setup, and no risk of tool name collisions across servers (duplicate tool names cause `process.exit(1)` at boot — enforced by design).
+
+```
+AnythingLLM boot
+  └─ bootMCPServers()  [server/utils/boot/index.js]
+       └─ spawns genie-mcp-server.mjs via stdio
+            └─ loadPlugins(PLUGINS_DIR)  [lib/pluginLoader.mjs]
+                 ├─ cms-directus/handler.mjs   → 55 tools
+                 ├─ ai-ollama/handler.mjs      →  3 tools
+                 ├─ web-stagehand/handler.mjs  →  9 tools
+                 ├─ media-process/handler.mjs  →  5 tools
+                 ├─ taxonomy-core/handler.mjs  →  7 tools
+                 └─ memory-recall/handler.mjs  →  4 tools
+                                               ────────────
+                                               83 tools total
+```
+
+### Why a single server?
+
+- **No per-tool process overhead.** All tools share one Node.js process and one set of HTTP clients (Directus, Ollama, Stagehand).
+- **No auth duplication.** `MCP_SERVICE_TOKEN` is loaded once by `lib/services.mjs` and passed to every plugin handler.
+- **Simpler config.** AnythingLLM registers a single `genie` entry in `anythingllm_mcp_servers.json` rather than one entry per service.
+- **Startup safety.** The plugin loader enforces no duplicate tool names across plugins — any collision terminates the process at boot rather than silently shadowing a tool.
+
+## Boot config
+
+The server is registered in `storage/plugins/anythingllm_mcp_servers.json`:
+
+```json
+{
+  "mcpServers": {
+    "genie": {
+      "command": "node",
+      "args": ["/path/to/scripts/mcp/genie-mcp-server.mjs"],
+      "env": {
+        "PLUGINS_DIR": "/path/to/storage/plugins",
+        "MCP_SERVICE_TOKEN": "...",
+        "DIRECTUS_URL": "http://127.0.0.1:8055",
+        "OLLAMA_URL": "http://127.0.0.1:11434",
+        "STAGEHAND_URL": "http://127.0.0.1:3002"
+      }
+    }
+  }
+}
+```
+
+`server/utils/boot/index.js` calls `bootMCPServers()` during AnythingLLM startup, which reads this file and spawns the server.
+
+## Environment variables
+
+| Variable | Default | Used by |
+|---|---|---|
+| `MCP_SERVICE_TOKEN` | — (required) | All Directus API calls |
+| `DIRECTUS_URL` | `http://127.0.0.1:8055` | cms.directus, media.process |
+| `OLLAMA_URL` | `http://127.0.0.1:11434` | ai.ollama |
+| `OLLAMA_MODEL` | `qwen-2.5:latest` | ai.ollama default model |
+| `STAGEHAND_URL` | `http://127.0.0.1:3002` | web.stagehand |
+| `STAGEHAND_MODEL` | `ollama/qwen-2.5` | web.stagehand model |
+| `PLUGINS_DIR` | `storage/plugins` | pluginLoader.mjs |
+
+<Warning>
+`MCP_SERVICE_TOKEN` is required. The server calls `process.exit(1)` immediately on startup if this variable is missing.
+</Warning>
+
+## Critical constraint: MCP-only Directus writes
+
+All Directus writes from server-side code **must go through `cms.directus` MCP tools**. Direct Directus SDK calls or raw `fetch()` to Directus from server code are prohibited.
+
+**Exceptions (pre-auth only, require `DIRECTUS_ADMIN_TOKEN`):**
+- `register.js` — new user registration flow
+- `rbacSync.js` — Directus → AnythingLLM RBAC provisioning
+
+These two files run before MCP auth is available. All other server code must use the MCP tools.
+
+<Note>
+This constraint exists because `MCP_SERVICE_TOKEN` carries the correct scoped permissions and audit trail for the service account. Bypassing it creates permission inconsistencies and breaks the audit log in `list-activity`.
+</Note>
+
+## Plugin bundles
+
+<CardGroup cols={2}>
+  <Card title="cms.directus" icon="database" href="/developer/mcp/cms-directus">
+    **55 tools** — Full Directus 11 API: items CRUD, users, files, flows, fields, relations, roles, policies, permissions, settings, schema, activity, and revisions. The primary data layer for all agent writes.
+  </Card>
+  <Card title="web.stagehand" icon="globe" href="/developer/mcp/web-stagehand">
+    **9 tools** — Browser automation via Playwright/Stagehand. Stateful sessions for scraping platform stats, HITL login flows, and fan data extraction.
+  </Card>
+  <Card title="ai.ollama" icon="cpu" href="/developer/mcp/ai-ollama">
+    **3 tools** — Local LLM inference via Ollama. Single-turn completions and multi-turn chat. No API keys, no cloud, no content moderation.
+  </Card>
+  <Card title="media.process" icon="film" href="/developer/mcp/media-process">
+    **5 tools** — Media pipeline integration. ffprobe validation, async watermarking, teaser clipping, thumbnail generation, and job status polling via BullMQ.
+  </Card>
+  <Card title="taxonomy.core" icon="tag" href="/developer/mcp/taxonomy-core">
+    **7 tools** — 3,205-node taxonomy graph: content search, LLM-assisted tagging, term mapping, graph ingestion, rebuild, pruning, and Hebbian edge reinforcement.
+  </Card>
+  <Card title="memory.recall" icon="brain" href="/developer/mcp/memory-recall">
+    **4 tools** — Skill retrieval via RRF + synaptic propagation. Surfaces relevant procedural skills from 191 skills across a 12,880+ edge DuckDB graph.
+  </Card>
+</CardGroup>
+
+## Plugin convention
+
+Every plugin is a directory under `storage/plugins/` containing two files:
+
+```
+storage/plugins/{name}/
+├── plugin.json    # manifest: id, name, version, kind, dependencies, config
+└── handler.mjs    # exports createTools(services) → Array<ToolDef>
+```
+
+The plugin loader (`lib/pluginLoader.mjs`) scans `PLUGINS_DIR` at startup. Directories with only a `handler.js` (CommonJS) are skipped — those are AnythingLLM agent skills, not MCP plugins.
+
+`ToolDef` shape:
+```javascript
+{
+  name: string,
+  description: string,
+  schema: ZodShape,
+  handler: async (input) => result
+}
+```
+
+All plugins receive a `services` object with pre-configured fetch clients:
+- `services.directus` — authenticated Directus client (`MCP_SERVICE_TOKEN` Bearer)
+- `services.ollama` — Ollama base URL
+- `services.stagehand` — Stagehand base URL
+
+## Sprint history
+
+| Sprint | Change | Tools |
+|---|---|---|
+| Sprint 1+2 (2026-03-08) | cms-directus, ai-ollama, web-stagehand migrated to unified server | 29 |
+| Sprint 3 (2026-03-08) | media-process (5) + taxonomy-core initial (2) | 36 |
+| Sprint 4 (2026-03-08) | taxonomy-core expanded to 7 tools; Hebbian cron added | 41 |
+| Sprint 5 (2026-03-09) | cms-directus expanded 17→55 (fields, relations, roles, policies, permissions, schema, activity, revisions) | 79 |
+| Sprint 6 (2026-03-14) | memory-recall plugin added (4 tools) | **83** |

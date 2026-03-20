@@ -1,0 +1,236 @@
+---
+title: "Taxonomy system"
+description: "How GenieHelper's 3,205-node proprietary adult content taxonomy classifies every piece of content, feeds retrieval, and evolves over time."
+---
+
+GenieHelper ships with a proprietary adult content taxonomy — 3,205 nodes, 12,880+ edges — built from real platform data across OnlyFans, Fansly, Reddit, and a range of adult content sites. Every piece of content you create, scrape, or schedule is automatically classified against this graph. That classification drives retrieval, surfaces related context, and improves over time through Hebbian reinforcement.
+
+This is not a tag cloud. It is a weighted semantic graph where relationships between concepts carry meaning, and where usage patterns change the graph itself.
+
+## The graph at a glance
+
+<CardGroup cols={2}>
+  <Card title="3,205 nodes" icon="circle-nodes">
+    Site origins, content categories, leaf-level tags, and 18 super-concept archetypes — all in a single authoritative JSON file.
+  </Card>
+  <Card title="12,880+ edges" icon="share-nodes">
+    Contains-edges, co-occurrence edges, and Hebbian-weighted activation edges that strengthen with use.
+  </Card>
+  <Card title="Automatic classification" icon="tag">
+    Every post, idea, and media asset is tagged on ingest. No manual labeling required.
+  </Card>
+  <Card title="Self-improving weights" icon="trending-up">
+    Nightly Hebbian decay strengthens recently activated nodes and allows dormant ones to fade, keeping the graph current without manual curation.
+  </Card>
+</CardGroup>
+
+<Info>
+  The canonical graph file lives at `Nodes/Universe/taxonomy_graph.json` (~5.1MB). This is the single source of truth. All other copies are derivatives. Never edit this file manually — use the scripts in `scripts/taxonomy/` to regenerate.
+</Info>
+
+## Node types
+
+The taxonomy organizes knowledge across four node types arranged in a hierarchy:
+
+| Node type | Description | Example |
+|---|---|---|
+| `super_concept` | Top-level archetypes — 18 of them | `Aesthetic_Lifestyle`, `Intimacy_Connection` |
+| `category` | Mid-level groupings | `Outdoor`, `Fitness`, `Cosplay` |
+| `tag` | Leaf-level content tags | `beach`, `yoga`, `latex` |
+| `site` | Platform origin markers | `onlyfans`, `fansly`, `reddit` |
+
+### Super-concepts
+
+The 18 super-concepts are the highest-level archetypes in the taxonomy. They act as anchor nodes that pull semantic weight from everything beneath them. When content is tagged with `yoga`, the system activates not just the `yoga` tag but propagates activation upward through `Fitness` and outward toward adjacent super-concepts like `Aesthetic_Lifestyle`.
+
+<Note>
+  The super-concepts are not editorial categories chosen by hand. They emerged from co-occurrence mining across real platform content data and represent the actual semantic clusters present in adult creator content.
+</Note>
+
+## The Directus collections
+
+The taxonomy is reflected in two Directus collections that the MCP plugin reads and writes:
+
+<AccordionGroup>
+  <Accordion title="taxonomy_dimensions — 6 super-concept dimensions">
+    Stores the six top-level classification dimensions used for structured tagging. Each dimension maps to a cluster of related super-concepts and provides the primary axis along which content is classified.
+
+    This collection is read-only at runtime. You modify it by running `scripts/taxonomy/seed_taxonomy.mjs` after updating the source data.
+  </Accordion>
+  <Accordion title="taxonomy_mappings — 3,208 classified tags">
+    Stores the full flat list of classified tags, each with its dimension assignment, parent category, and associated super-concept. The `taxonomy.core` MCP plugin reads this collection when tagging content and when resolving term mappings.
+
+    Schema key fields:
+    - `tag` — the raw content tag string
+    - `dimension` — which of the 6 super-concept dimensions it belongs to
+    - `category` — the parent category node
+    - `super_concept` — the highest-level archetype
+    - `weight` — current Hebbian activation weight (0.0–1.0)
+  </Accordion>
+</AccordionGroup>
+
+<Warning>
+  There is a known stale collection name — `taxonomy_mapping` (singular) may appear in older code alongside the canonical `taxonomy_mappings` (plural). The singular form is a Sprint 12 cleanup candidate. Always use `taxonomy_mappings` in new code.
+</Warning>
+
+## taxonomy.core MCP plugin
+
+All taxonomy operations are exposed through the `taxonomy.core` plugin, part of the unified `genie-mcp-server`. The plugin has 7 tools:
+
+<CardGroup cols={2}>
+  <Card title="search" icon="magnifying-glass">
+    Semantic search across the taxonomy graph. Returns ranked nodes matching a query string, including related super-concepts and co-occurrence neighbors.
+  </Card>
+  <Card title="tag-content" icon="tags">
+    Classifies a piece of content — post, idea, or media asset — against the taxonomy. Writes tag assignments back to Directus and activates the corresponding graph nodes.
+  </Card>
+  <Card title="map-term" icon="map">
+    Resolves a raw term or creator-specific phrase to its canonical taxonomy node. Handles synonyms, abbreviations, and platform-specific slang.
+  </Card>
+  <Card title="ingest-source" icon="database">
+    Ingests a new data source (scraped content, CSV, or URL) into the taxonomy pipeline. Tags are extracted, classified, and written to `taxonomy_mappings`.
+  </Card>
+  <Card title="rebuild-graph" icon="refresh-cw">
+    Triggers a full taxonomy graph rebuild from the current state of `taxonomy_mappings` in Directus. Equivalent to running `seed_taxonomy.mjs` but available as an MCP tool call at runtime.
+  </Card>
+  <Card title="prune" icon="scissors">
+    Removes low-weight, low-frequency nodes from the graph. Runs after Hebbian decay to evict nodes that have not been activated recently and fall below the retention threshold.
+  </Card>
+  <Card title="strengthen" icon="link">
+    Manually reinforces an edge between two nodes — equivalent to a Hebbian activation without content input. Used by the nightly consolidation cycle when promoting cross-user pattern candidates.
+  </Card>
+</CardGroup>
+
+<Tip>
+  `tag-content` is the tool called most frequently by the agent — it fires automatically on every post draft, content idea, and media ingest. You do not need to invoke it manually.
+</Tip>
+
+## Synaptic propagation and retrieval
+
+Tagging content is only the first step. The real value of the taxonomy graph is how it feeds the retrieval system.
+
+When a user query arrives, the retrieved seed nodes are used as starting points for **synaptic propagation** — a Leaky Integrate-and-Fire (LIF) neuron model that walks the graph outward from the seeds, activating adjacent nodes weighted by edge strength. A query about "beach yoga" will activate:
+
+1. The `beach` and `yoga` leaf nodes directly
+2. Their parent categories: `Outdoor`, `Fitness`
+3. Related super-concepts: `Aesthetic_Lifestyle`, `Body_Expression`
+4. Co-occurrence neighbors: nodes that frequently appear alongside yoga or outdoor content in the graph
+
+This activation pattern is then used to weight the context injected into the agent's prompt — content that is semantically adjacent to the query gets surfaced, not just content that is lexically similar.
+
+```
+Query: "beach yoga"
+  → seed nodes: [tag:beach, tag:yoga]
+    → propagate via LIF neuron model
+      → activated: [category:Outdoor, category:Fitness, super_concept:Aesthetic_Lifestyle]
+        → retrieve: content tagged with any activated node
+          → rank by activation strength + RRF score
+            → Shannon entropy gate: evict low-information nodes
+              → inject into agent context window
+```
+
+Edges that are traversed during propagation are strengthened via Hebbian reinforcement — the graph literally learns which conceptual paths are most useful for retrieval.
+
+<Info>
+  The synaptic propagation implementation lives in `memory/retrieval/synaptic/` — specifically `propagate_from_seeds`, `strengthen_edge`, and `lif_neurons`. The taxonomy graph in `Nodes/Universe/taxonomy_graph.json` is what it walks.
+</Info>
+
+## The graph format
+
+The taxonomy graph is stored as a plain JSON file, backed by pgvector embeddings for dense similarity search. The JSON schema:
+
+```json
+{
+  "nodes": [
+    {
+      "id": "tag:beach",
+      "type": "tag",
+      "label": "beach",
+      "weight": 1.0,
+      "last_activated": "2026-03-10"
+    }
+  ],
+  "edges": [
+    {
+      "source": "category:Outdoor",
+      "target": "tag:beach",
+      "weight": 0.8,
+      "type": "contains"
+    }
+  ],
+  "meta": {
+    "version": 2,
+    "node_count": 3205,
+    "edge_count": 12880,
+    "generated": "2026-03-10"
+  }
+}
+```
+
+Edge types:
+- `contains` — parent-to-child structural relationship
+- `co_occurrence` — two nodes appear together frequently in real content
+- `hebbian` — edges added or strengthened by Hebbian reinforcement over time
+
+## Node lifecycle
+
+Nodes move through a three-tier hierarchy as they gain confidence:
+
+```
+Nodes/
+├── Universe/    ← canonical, system-wide, authoritative
+├── User/        ← per-creator weighted subgraphs
+└── Transitional/ ← promotion candidates from cross-user mining
+```
+
+The lifecycle:
+
+<AccordionGroup>
+  <Accordion title="1. Tag appears in content">
+    A new tag surfaces in a creator's content. The `taxonomy.core` plugin classifies it against `taxonomy_mappings` and activates the corresponding node in the creator's `user_nodes` record in Directus.
+  </Accordion>
+  <Accordion title="2. Session promotion">
+    After the session, confirmed activations are written to `Nodes/User/{creator-uuid}/`. The node now exists at the per-creator level with an initial weight.
+  </Accordion>
+  <Accordion title="3. Hebbian decay">
+    Every night, `memory/consolidation/hebbian/node-decay.mjs` runs across all user nodes. Nodes that were activated recently have their weights increased. Nodes that have not been activated decay toward zero.
+  </Accordion>
+  <Accordion title="4. Cross-user promotion">
+    When the same node pattern appears across multiple creator profiles, `memory/consolidation/cross_user/fp_growth.mjs` promotes the pattern to `Nodes/Transitional/`. This is currently in progress (sprint B7-3).
+  </Accordion>
+  <Accordion title="5. Universe promotion">
+    After consolidation review, transitional nodes are merged into `Nodes/Universe/taxonomy_graph.json`, becoming part of the canonical taxonomy. The knowledge accretes.
+  </Accordion>
+</AccordionGroup>
+
+## Scripts for taxonomy management
+
+All taxonomy build and maintenance tools live in `scripts/taxonomy/`:
+
+| Script | Purpose |
+|---|---|
+| `seed_taxonomy.mjs` | Full rebuild from Directus `taxonomy_mappings` data. Regenerates `taxonomy_graph.json`. |
+| `process_dataset.py` | Original extractor — processes staging CSV data, classifies tags, writes to Directus. |
+| `enforce_taxonomy.mjs` | Validates the graph against the schema, flags orphaned nodes and broken edges. |
+| `reclassify.mjs` | Reclassifies existing content against an updated taxonomy — run after adding new super-concepts or restructuring categories. |
+
+<Warning>
+  Never edit `Nodes/Universe/taxonomy_graph.json` directly. All changes must go through the scripts above. The file was cleaned of a duplicate copy on 2026-03-10 — `memory/graph/taxonomy_graph.json` no longer exists.
+</Warning>
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Synaptic propagation" icon="brain" href="/memory/synaptic-propagation">
+    How LIF neurons walk the taxonomy graph during retrieval
+  </Card>
+  <Card title="Hebbian consolidation" icon="moon" href="/memory/hebbian-consolidation">
+    Nightly decay and cross-user pattern promotion
+  </Card>
+  <Card title="taxonomy.core MCP plugin" icon="tool" href="/developer/mcp/taxonomy-core">
+    Full reference for all 7 taxonomy tools
+  </Card>
+  <Card title="JIT skill graph" icon="network" href="/taxonomy/skill-graph">
+    The DuckDB skill graph and how skills are surfaced just-in-time
+  </Card>
+</CardGroup>

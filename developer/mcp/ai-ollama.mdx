@@ -1,0 +1,112 @@
+---
+title: ai.ollama
+description: 3-tool plugin for local LLM inference via Ollama — single-turn completions, multi-turn chat, and model listing. No API keys, no cloud.
+---
+
+**Plugin ID:** `ai.ollama` | **Version:** 1.1.0 | **Tools:** 3
+
+The `ai.ollama` plugin exposes GenieHelper's local Ollama inference layer to the agent as MCP tools. All inference runs on the local VPS — no tokens leave the server, no API keys are required, and there is no content moderation layer that would reject adult content requests.
+
+<Info>
+Ollama runs as a systemd service on port 11434. It is not a Docker container. The plugin connects to `http://127.0.0.1:11434` by default, configurable via `OLLAMA_URL`.
+</Info>
+
+## Tools
+
+### `generate` — single-turn completion
+
+Sends a single prompt to Ollama and returns the completion. This is the right tool for stateless, one-shot generation tasks.
+
+**Parameters:**
+- `prompt` (required) — the user prompt
+- `system` (optional) — system instruction injected before the prompt
+- `model` (optional) — overrides `OLLAMA_MODEL` for this call
+- `temperature` (optional) — sampling temperature (default 0.7)
+- `max_tokens` (optional) — maximum tokens to generate
+
+**When to use `generate`:**
+- Generating captions for a single media asset
+- Classifying a piece of content against a schema
+- Summarising scraped platform data
+- Drafting a single-message push notification
+- Any task where conversation history is irrelevant
+
+### `chat` — multi-turn conversation
+
+Sends a full messages array (`[{role, content}]`) to the Ollama chat endpoint. Maintains conversational coherence across multiple exchanges by including prior turns.
+
+**Parameters:**
+- `messages` (required) — JSON array of `{role: "user"|"assistant"|"system", content: string}`
+- `system` (optional) — system prompt prepended to the messages array
+- `model` (optional) — overrides `OLLAMA_MODEL` for this call
+- `temperature` (optional) — sampling temperature
+
+**When to use `chat`:**
+- Drafting a back-and-forth fan message conversation where previous replies shape tone
+- Multi-step creative writing where each generation builds on the last
+- Iterative refinement loops where the agent critiques and improves its own output
+- Simulating a creator's voice across multiple platform reply threads
+
+### `list-models` — available models
+
+Lists all Ollama models currently pulled on the local server. Returns model name, disk size, and last modified timestamp.
+
+**When to use `list-models`:**
+- Verifying a required model is available before starting a generation task
+- Selecting the most appropriate model for a task based on what is currently loaded
+- Debugging inference failures when the default model may have been removed
+
+## Model selection
+
+GenieHelper runs three primary models, each with a specific role:
+
+<CardGroup cols={2}>
+  <Card title="dolphin3:8b" icon="wand">
+    **Role: Orchestrator**
+
+    Default model (`OLLAMA_MODEL` env). Used for tool planning, ACTION emission, and agent coordination. Llama 3.1 base with Dolphin fine-tune for instruction following.
+  </Card>
+  <Card title="dolphin-mistral:7b" icon="pen">
+    **Role: Content writer**
+
+    Uncensored Mistral fine-tune. Used for caption writing, fan message drafting, and any task requiring creative adult content generation without content policy restrictions.
+  </Card>
+  <Card title="qwen-2.5:latest" icon="code">
+    **Role: Agent / code**
+
+    Primary AnythingLLM agent model. Used for JSON generation, code tasks, and structured output. Also the default `STAGEHAND_MODEL` for browser automation.
+  </Card>
+  <Card title="Custom selection" icon="sliders">
+    **Per-call override**
+
+    Both `generate` and `chat` accept a `model` parameter to override `OLLAMA_MODEL` for a single call. Use this to route content writing tasks to `dolphin-mistral:7b` without changing the global default.
+  </Card>
+</CardGroup>
+
+<Note>
+The default model is set by the `OLLAMA_MODEL` environment variable. If the variable is not set, the plugin falls back to `qwen-2.5:latest`. The orchestrator model (`dolphin3:8b-llama3.1-q4_K_M`) must be set explicitly via the env var.
+</Note>
+
+## Performance characteristics
+
+All inference is CPU-bound on the IONOS dedicated server (16 GB RAM).
+
+| Model | Approx. latency | RAM usage |
+|---|---|---|
+| qwen-2.5:7b (q4) | 2–5 s/call | ~4.8 GB |
+| dolphin-mistral:7b | 3–6 s/call | ~5.2 GB |
+| dolphin3:8b | 4–8 s/call | ~5.8 GB |
+
+<Warning>
+The server has a 16 GB RAM ceiling. Running multiple concurrent Ollama calls with large models risks OOM. The plugin is configured with `concurrency: 2` and `timeout_ms: 120000` (2 minutes) to accommodate slow CPU inference without false timeouts.
+</Warning>
+
+## Configuration
+
+| Setting | Value |
+|---|---|
+| Base URL | `http://127.0.0.1:11434` (configurable via `OLLAMA_URL`) |
+| Default model | `OLLAMA_MODEL` env (fallback: `qwen-2.5:latest`) |
+| Timeout | 120,000 ms (2 minutes) |
+| Concurrency | 2 |
+| Auth | None (localhost only) |

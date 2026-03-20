@@ -1,0 +1,161 @@
+---
+title: Content & Publishing
+description: GenieHelper's content and publishing workflow covers idea generation, post drafting, editorial series, campaign management, scheduling, and the creator persona system that makes every AI-generated word sound like you.
+---
+
+Content flows through GenieHelper in a defined pipeline: ideas → drafts → scheduled posts → published. Each stage has AI assistance, creator control points, and BullMQ-backed reliability for the final publish step.
+
+## Idea inbox
+
+The idea inbox surfaces AI-generated content ideas in the `content_ideas` collection. Each idea is scored, taxonomy-tagged, and ready to promote to a post draft in one action.
+
+### What an idea record contains
+
+- **Title and concept** — a short description of the content angle
+- **Taxonomy tags** — one or more nodes from the 3,205-node adult content taxonomy, applied automatically
+- **Relevance score** — how well this idea fits the creator's current content mix and platform performance
+- **Content category** — which pillar (education, entertainment, behind-the-scenes, promotional, etc.)
+- **Platform suggestions** — which platforms this idea is best suited for
+- **Source** — agent-generated, trend-derived, or manually added
+
+Creators can promote any idea directly to a post draft. The idea record is linked to the resulting `content_posts` record for attribution.
+
+<Tip>
+  The IdeaRadarPanel (right wing) surfaces the highest-scoring ideas from the inbox with a visual scoring display. The agent can also proactively open this panel mid-conversation when it identifies a relevant opportunity.
+</Tip>
+
+## Post drafts
+
+Post drafts live in the `content_posts` collection. A draft is the central record that carries everything needed to publish across one or more platforms.
+
+### What a post draft contains
+
+- **Body copy** — the main caption or message body
+- **Hashtags** — platform-specific hashtag sets
+- **CTA links** — call-to-action URLs (tip menu, Throne wishlist, platform profile)
+- **Audience targeting** — which segment or tier this post is aimed at
+- **Media attachments** — links to `media_assets` records
+- **Platform targets** — which platforms this draft will publish to
+- **A/B variants** — alternative caption or media combinations for split testing
+- **Status** — draft → approved → scheduled → published
+
+### A/B variants
+
+Post drafts support multiple variants to test different headlines, CTAs, or media choices. Each variant is tracked as a child record and performance is measured independently via `post_performance_snapshots`.
+
+## Editorial series
+
+Series in `content_series` are recurring content tracks — ongoing editorial themes that repeat on a schedule. Series are distinct from campaigns.
+
+**Series examples:**
+- "Monday Motivation" — weekly inspirational posts
+- "Behind-the-Scenes Friday" — weekly production previews
+- "Weekly Check-In" — regular subscriber engagement posts
+
+A series defines the theme, the cadence, the platform targets, and the voice tone. Individual posts belong to a series by linking to its record. This gives the editorial calendar a recurring backbone that AI can generate against consistently.
+
+<Warning>
+  Campaigns and series are separate concepts in the data model. Campaigns are bounded, promotional, and have revenue targets. Series are ongoing editorial tracks. Do not conflate them in the UI or in queries.
+</Warning>
+
+## Campaign management
+
+Campaigns in the `campaigns` collection are bounded, goal-oriented promotional efforts — a limited-time PPV drop, a subscriber milestone push, a holiday content pack.
+
+### Campaign tracking
+
+| Field | Description |
+|---|---|
+| Planned revenue | Expected revenue target set at campaign creation |
+| Actual revenue | Real-time sum from `campaign_platform_performance` |
+| ROI | Actual vs planned, with cost inputs |
+| Attribution window | The date range for crediting revenue to this campaign |
+| Platform breakdown | Per-platform revenue and engagement from `campaign_platform_performance` |
+| Linked posts | Which `content_posts` records belong to this campaign |
+
+Campaign platform performance is tracked in `campaign_platform_performance` — one record per platform per campaign, carrying revenue, clicks, conversions, and engagement counts.
+
+## Post scheduling
+
+The scheduling system connects the editorial calendar to the publish queue.
+
+### How scheduling works
+
+<Steps>
+  <Step title="Draft approved">
+    A `content_posts` record reaches `approved` status — either manually by the creator or via agent confirmation.
+  </Step>
+  <Step title="Scheduled post created">
+    A `scheduled_posts` record is created, linking back to the draft and specifying the publish time and target platforms.
+  </Step>
+  <Step title="post_scheduler fires">
+    The `post_scheduler` runs every 60 seconds. It queries `scheduled_posts` for records where the publish time has passed and status is `pending`.
+  </Step>
+  <Step title="BullMQ job enqueued">
+    The scheduler enqueues a `publish_post` job on the `scrape-jobs` BullMQ queue. The job carries the post content, platform credentials, and media asset references.
+  </Step>
+  <Step title="Media worker executes">
+    The media worker's `publish.js` handler picks up the job and executes the publish via Stagehand browser automation. Status updates flow back to `scheduled_posts`.
+  </Step>
+</Steps>
+
+### BullMQ reliability
+
+<Info>
+  The `post_scheduler` runs every 60 seconds as a BullMQ scheduler. All publish jobs run at `concurrency:1` to prevent overlapping browser sessions and respect RAM constraints on the 16 GB server. Job state is persisted in Redis — a server restart does not lose queued posts.
+</Info>
+
+Tier-enforced queue limits restrict how many posts can be scheduled in a given period based on subscription tier. These limits are defined in `tier_rate_limits.json` and enforced by `subscriptionValidator.js` before a job is enqueued.
+
+## Creator persona system
+
+The creator persona system ensures every AI-generated caption, message, and idea sounds like the creator — not like a generic AI.
+
+### What a persona defines
+
+Personas are stored across several related collections:
+
+| Collection | Contents |
+|---|---|
+| `creator_personas` | The persona record — name, description, active flag |
+| `persona_lexicon_rules` | Words and phrases to use or avoid; preferred alternatives |
+| `persona_formatting_preferences` | Emoji use, line breaks, capitalization, punctuation style |
+| `creator_preferences` | Platform tone settings, response length preferences |
+
+### How personas are applied
+
+When the agent generates any content — a post caption, a fan message, a content idea — it retrieves the active creator persona and injects the lexicon rules and formatting preferences into the generation prompt. The AI writes within those constraints.
+
+The IdentityStudioPanel (left wing) is where creators review and edit their persona. Changes take effect immediately on the next generation call.
+
+<AccordionGroup>
+  <Accordion title="Lexicon rules">
+    Define specific words you always use or never use. Example: always use "gorgeous" instead of "sexy", never use corporate filler phrases like "leverage" or "synergy". The agent enforces these rules when drafting.
+  </Accordion>
+  <Accordion title="Banned phrases">
+    A blocklist of phrases the AI should never generate — slang you find off-brand, platform-specific terms that read as inauthentic, or language that conflicts with your brand identity.
+  </Accordion>
+  <Accordion title="Preferred tone">
+    A structured description of your voice: warmth level, humor style, explicitness threshold, how you address fans, how you open messages, how you close them.
+  </Accordion>
+  <Accordion title="Formatting preferences">
+    Controls how text is structured: emoji frequency, line break style, whether you use ALL CAPS for emphasis, preferred punctuation patterns.
+  </Accordion>
+</AccordionGroup>
+
+## Content boundaries and monetization profiles
+
+Content boundaries in `content_boundaries` define what a creator will and will not produce. The agent enforces these when generating content ideas and when handling custom content requests.
+
+Monetization profiles in `monetization_profiles` map boundary settings to tiered pricing:
+
+- What content categories are available at each price point
+- Which platform tiers unlock which content types
+- Minimum pricing floors per content category
+- Custom content request pricing rules
+
+When a fan submits a custom request, the system checks the request against the creator's boundaries before surfacing it for review. Requests that fall outside defined boundaries are flagged automatically.
+
+<Note>
+  Content boundary enforcement is advisory for the creator and prescriptive for the agent. The agent will not generate ideas or draft content that violates the creator's defined boundaries without explicit override.
+</Note>

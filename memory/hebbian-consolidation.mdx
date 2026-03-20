@@ -1,0 +1,206 @@
+---
+title: "Hebbian consolidation"
+description: "The nightly cycle that keeps GenieHelper's knowledge graph healthy: Hebbian decay on 3,205 taxonomy nodes, cross-user FP-Growth pattern mining, and automatic promotion of collective patterns to the universal graph."
+---
+
+The retrieval pipeline is only as good as the knowledge graph it operates on. Without an active maintenance process, the graph would accumulate dead weight from concepts creators explored once and abandoned, drift out of sync with actual platform activity, and fail to capture trends that emerge across the creator community.
+
+The nightly Hebbian consolidation cycle is the feedback loop that prevents this. It runs every night after creator session activity has settled, adjusting node weights based on actual usage and promoting cross-creator patterns to the shared universal graph.
+
+## Why Hebbian learning
+
+The classic neuroscience principle: *neurons that fire together, wire together.* Applied to knowledge graphs:
+
+- Concepts that are consistently activated together (co-appear in tagged content, co-fire in retrieval sessions) gain stronger edge connections
+- Concepts that are rarely or never activated lose weight over time and eventually decay out of the active graph
+- The graph structure reflects actual creator behavior, not theoretical taxonomy design
+
+This is the mechanism by which GenieHelper's knowledge improves without manual curation. The system learns from what creators actually do.
+
+## The nightly schedule
+
+```
+02:00 UTC  →  node-decay.mjs         Hebbian decay on Directus user_nodes
+02:30 UTC  →  taxonomy-hebbian.mjs   CO_OCCURS edge boost/decay on taxonomy_graph.json
+02:45 UTC  →  taxonomy-reconcile.mjs Classify pending_review tags as active
+03:00 UTC  →  fp_growth.mjs          Cross-user pattern mining (planned — B7-3)
+03:30 UTC  →  promote.mjs            Write promoted patterns to Nodes/Transitional/ (planned)
+```
+
+Decay runs before pattern mining deliberately: stale signals are eliminated before the FP-Growth algorithm mines the cleaned graph. Amplifying stale nodes would produce false collective patterns.
+
+## Stage 1: node-decay.mjs
+
+`memory/consolidation/hebbian/node-decay.mjs` applies Hebbian decay to every active node in the Directus `user_nodes` collection.
+
+### Decay formula
+
+```
+new_weight = weight × (1 − decay_rate) ^ days_since_last_reinforced
+
+if new_weight < 0.05  →  status = 'decayed'
+```
+
+Each node stores its own `decay_rate` (default 0.05 — 5% per day). A node last reinforced 14 days ago with default decay rate retains:
+
+```
+1.0 × (1 - 0.05)^14 = 1.0 × 0.95^14 ≈ 0.488
+```
+
+After ~44 days without reinforcement, the node falls below the 0.05 threshold and is marked `decayed`.
+
+### Reinforcement
+
+When a creator accepts generated content, the Action Runner calls `node-decay.mjs reinforce <node_id>`:
+
+```
+new_weight = min(1.0, weight + 0.1)
+status = 'confirmed'
+last_reinforced_at = now
+```
+
+A reinforcement event adds 0.1 to the weight (capped at 1.0) and resets the decay clock.
+
+```bash
+# Preview decay pass without writing (safe to run anytime)
+node memory/consolidation/hebbian/node-decay.mjs --dry-run
+
+# Reinforce a specific node after content acceptance
+node memory/consolidation/hebbian/node-decay.mjs reinforce <node_id>
+```
+
+## Stage 2: taxonomy-hebbian.mjs
+
+`memory/consolidation/hebbian/taxonomy-hebbian.mjs` operates on the system-wide taxonomy graph (`Nodes/Universe/taxonomy_graph.json`).
+
+It boosts CO_OCCURS edge weights between tags that co-appeared in creator content during the previous cycle window, then applies global decay to all edges:
+
+```bash
+# Standard nightly run
+node memory/consolidation/hebbian/taxonomy-hebbian.mjs
+
+# Custom parameters
+node memory/consolidation/hebbian/taxonomy-hebbian.mjs \
+  --hours 48 --delta 2 --decay 0.99 --dry-run
+```
+
+`--hours` sets the lookback window for co-occurrence detection. `--delta` is the edge weight boost per co-occurrence. `--decay` is the global decay multiplier applied to all edges.
+
+Changes are written atomically to `Nodes/Universe/taxonomy_graph.json` to prevent partial writes during a crash.
+
+## Stage 3: cross-user FP-Growth pattern mining *(planned)*
+
+<Note>
+  Cross-user pattern mining is designed and structurally ready but not yet implemented (B7-3). The directory `memory/consolidation/cross_user/` exists with its README. No code exists yet.
+</Note>
+
+Once implemented, `fp_growth.mjs` will scan all confirmed `user_nodes` records across every creator and identify tag/concept combinations that co-occur above a configurable support threshold.
+
+**FP-Growth parameters (design):**
+
+| Parameter | Default | Description |
+|---|---|---|
+| `support` | ≥ 0.15 | Minimum fraction of creators where the pattern must appear |
+| `confidence` | ≥ 0.70 | Minimum conditional probability for the association |
+| `min_creator_count` | TBD | Minimum distinct creators before a pattern can promote |
+
+When a pattern clears all thresholds, `promote.mjs` writes it to `Nodes/Transitional/` as a candidate for promotion to `Nodes/Universe/`.
+
+### Privacy design
+
+Pattern mining aggregates across creators but never exposes individual attribution. Promoted patterns carry no creator IDs in the graph. Audit logs store pattern fingerprints only.
+
+## The node tier system
+
+Knowledge nodes flow through three tiers, each with distinct semantics:
+
+<CardGroup cols={2}>
+  <Card title="Nodes/Universe/" icon="globe">
+    The canonical 3,205-node taxonomy graph. System-wide, shared across all creators. Written by `taxonomy-hebbian.mjs` and `promote.mjs`. Read by synaptic propagation at retrieval time.
+  </Card>
+  <Card title="Nodes/User/" icon="user">
+    Per-creator subgraphs. Each creator's node activations, weights, and decay states. Read source for FP-Growth pattern mining. Written by `node-decay.mjs` via Directus `user_nodes`.
+  </Card>
+  <Card title="Nodes/Transitional/" icon="arrows-turn-to-dots">
+    Promotion staging area. Patterns that have cleared FP-Growth thresholds sit here awaiting human or automated review before moving to `Nodes/Universe/`. Prevents unreviewed patterns from polluting the universal graph.
+  </Card>
+  <Card title="agent-skills/ → DuckDB" icon="database">
+    Procedural memory. New skills drafted from observed agent behavior are ingested into `agent_memory.duckdb` (191 skills, 252 nodes, 12,880+ edges) and become retrievable on future sessions.
+  </Card>
+</CardGroup>
+
+```
+Nodes/User/{creator-uuid}/
+    │
+    │  nightly: FP-Growth mines confirmed nodes across all users
+    ▼
+Nodes/Transitional/
+    │
+    │  review (human or automated)
+    ▼
+Nodes/Universe/           ← 3,205-node canonical graph
+    │
+    │  taxonomy-hebbian.mjs applies nightly boost/decay
+    ▼
+Nodes/Universe/           ← updated graph, ready for retrieval
+```
+
+## Automatic skill creation *(in progress)*
+
+As the agent handles new request types, new skills are drafted to `agent-skills/`. Once ingested:
+
+```bash
+python3 memory/core/ingest_skills.py --reset
+python3 memory/core/generate_hierarchical_goosehints.py
+```
+
+The new skills become nodes in DuckDB and are retrievable via JIT hydration on future sessions. The system accretes procedural memory — it gets better at tasks it has handled before.
+
+## Cron registration
+
+```bash
+# Add to crontab (crontab -e)
+0 2 * * *  cd /var/www/vhosts/geniehelper.com/agentx && \
+  node memory/consolidation/hebbian/node-decay.mjs \
+  >> setup/logs/node-decay.log 2>&1
+
+0 3 * * *  cd /var/www/vhosts/geniehelper.com/agentx && \
+  node memory/consolidation/hebbian/taxonomy-hebbian.mjs \
+  >> setup/logs/taxonomy-hebbian.log 2>&1
+
+45 2 * * * cd /var/www/vhosts/geniehelper.com/agentx && \
+  DIRECTUS_ADMIN_TOKEN=xxx \
+  node memory/consolidation/taxonomy-reconcile.mjs \
+  >> setup/logs/taxonomy-reconcile.log 2>&1
+```
+
+Logs are retained at 3,000 lines each. PM2 can also manage these via `cron_restart` in `ecosystem.config.js`.
+
+<Warning>
+  These scripts have not yet been registered in the OS crontab or PM2 ecosystem config. Manual registration is required. Verify with `crontab -l` before assuming they are running nightly.
+</Warning>
+
+## Implementation files
+
+```
+memory/consolidation/
+├── hebbian/
+│   ├── node-decay.mjs         ← per-creator Hebbian decay + reinforcement
+│   ├── taxonomy-hebbian.mjs   ← system-wide CO_OCCURS edge boost/decay
+│   └── README.md
+├── cross_user/
+│   └── README.md              ← FP-Growth design (no code yet)
+└── taxonomy-reconcile.mjs     ← classifies pending_review tags
+```
+
+### Key operations
+
+| Script | Operation | Target |
+|---|---|---|
+| `node-decay.mjs` | Decay: `weight × (1-rate)^days` | Directus `user_nodes` |
+| `node-decay.mjs` | Reinforce: `weight + 0.1`, reset clock | Directus `user_nodes` |
+| `taxonomy-hebbian.mjs` | Boost CO_OCCURS edges from recent co-occurrences | `Nodes/Universe/taxonomy_graph.json` |
+| `taxonomy-hebbian.mjs` | Global edge decay pass | `Nodes/Universe/taxonomy_graph.json` |
+| `taxonomy-reconcile.mjs` | Promote `pending_review` → `active` | Directus `taxonomy_mapping` |
+| `fp_growth.mjs` *(planned)* | Mine frequent patterns across all `user_nodes` | Directus `user_nodes` (read) |
+| `promote.mjs` *(planned)* | Write promoted patterns | `Nodes/Transitional/` |

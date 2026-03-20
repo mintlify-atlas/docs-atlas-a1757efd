@@ -1,0 +1,140 @@
+---
+title: Media Pipeline
+description: GenieHelper processes all media locally using FFmpeg and a BullMQ-powered worker. This page covers the three job queues, all 14 media processing operations, steganographic watermarking for leak tracing, media collections, and asset intelligence.
+---
+
+All media processing in GenieHelper is local. No asset is sent to a cloud service for processing. FFmpeg runs on the dedicated server, jobs are queued via BullMQ, and results write back to `media_assets` in Directus. The media worker process handles image operations, video operations, scraping, publishing, and onboarding jobs in sequence — one at a time, no concurrency — to stay within the 16 GB RAM constraint.
+
+<Info>
+  The media worker was split from a single 2,000-line `index.js` into a modular `operations/` directory on 2026-03-15. The current `index.js` is ~310 lines — only the operations map, worker definitions, and scheduler registrations.
+</Info>
+
+## Architecture
+
+The media worker (`media-worker/`) is a BullMQ consumer managed by PM2. It listens on three separate queues:
+
+<AccordionGroup>
+  <Accordion title="media-jobs — image and video processing" defaultOpen={true}>
+    Handles all FFmpeg-based transformations. Concurrency: 1. Jobs are queued by the agent via the `media.process` MCP plugin or by Action Runner `bullmq_enqueue` steps.
+
+    Operations handled: `convert_image`, `resize_image`, `crop_image`, `resize_video`, `crop_video`, `compress_video`, `download_video`, `trim_videos`, `join_videos`, `apply_watermark`, `create_teaser`, `strip_metadata`, `apply_steganographic_watermark`, `ytdlp_info`.
+  </Accordion>
+  <Accordion title="scrape-jobs — browser automation">
+    Handles platform scraping and post publishing via Stagehand. Concurrency: 1 — only one browser session runs at a time. Jobs include `scrape_profile`, `scrape_post_performance`, and `publish_post`.
+  </Accordion>
+  <Accordion title="onboarding-jobs — LLM-heavy setup">
+    Handles the multi-phase creator onboarding pipeline. These jobs are LLM-heavy and run sequentially to avoid competing for RAM with Ollama's pinned model allocation.
+  </Accordion>
+</AccordionGroup>
+
+## Operations module structure
+
+```
+media-worker/
+├── index.js                  # ~310 lines — OPERATIONS map, workers, schedulers
+└── operations/
+    ├── helpers.js            # Shared utilities (path resolution, temp cleanup, job logging)
+    ├── media.js              # 14 FFmpeg operation handlers
+    ├── scrape.js             # scrape_profile, scrape_post_performance
+    ├── publish.js            # publish_post + scrape_post_performance trigger
+    └── onboarding.js         # Onboarding pipeline phase handlers
+```
+
+## Media processing operations
+
+All 14 handlers live in `operations/media.js`.
+
+<AccordionGroup>
+  <Accordion title="Image operations">
+    | Operation | Description |
+    |---|---|
+    | `convert_image` | Convert between image formats (JPEG, PNG, WebP, AVIF) |
+    | `resize_image` | Resize to specified dimensions, maintaining or ignoring aspect ratio |
+    | `crop_image` | Crop to a defined region — supports center crop and custom offsets |
+    | `apply_watermark` | Overlay a visible watermark image at specified position and opacity |
+    | `strip_metadata` | Remove EXIF and XMP metadata from image files before distribution |
+  </Accordion>
+  <Accordion title="Video operations">
+    | Operation | Description |
+    |---|---|
+    | `resize_video` | Rescale video to target resolution using FFmpeg scale filter |
+    | `crop_video` | Crop video to a defined region and resolution |
+    | `compress_video` | Re-encode video with target bitrate or CRF — for platform size limits |
+    | `download_video` | Download video from a URL using yt-dlp integration |
+    | `trim_videos` | Cut a segment from a video file by start/end timecode |
+    | `join_videos` | Concatenate multiple video files in order using FFmpeg concat |
+    | `apply_watermark` | Overlay a visible watermark on a video at specified position |
+    | `create_teaser` | Extract a preview clip from a video — for PPV teasers |
+    | `strip_metadata` | Remove metadata from video files before distribution |
+  </Accordion>
+  <Accordion title="Utility operations">
+    | Operation | Description |
+    |---|---|
+    | `ytdlp_info` | Probe a URL with yt-dlp to retrieve video metadata before downloading |
+    | `apply_steganographic_watermark` | Embed an invisible fan-specific watermark in an image or video |
+  </Accordion>
+</AccordionGroup>
+
+## Steganographic watermarking
+
+Every piece of purchased media gets an invisible, fan-specific steganographic watermark embedded at delivery time. If a file leaks, the watermark identifies exactly which fan's purchase it came from.
+
+### How it works
+
+<Steps>
+  <Step title="Fan purchases content">
+    A fan completes a PPV purchase or custom content delivery. The system identifies the fan's `fan_profiles` record and their unique fan ID.
+  </Step>
+  <Step title="Watermark job enqueued">
+    A `apply_steganographic_watermark` job is added to the `media-jobs` queue with the fan ID as the payload identifier. The original asset is referenced by its `media_assets` record ID.
+  </Step>
+  <Step title="Invisible watermark embedded">
+    The `apply_steganographic_watermark` handler in `operations/media.js` encodes the fan-specific identifier into the pixel data of the media file using steganographic techniques. The modification is invisible to the eye.
+  </Step>
+  <Step title="Watermarked copy stored">
+    A new `media_assets` record is created for the watermarked copy, linked to the original and to the fan's delivery record. The original remains unmodified.
+  </Step>
+  <Step title="Leak traced">
+    If the watermarked file appears publicly, the `ProtectionInspectorPanel` (left wing) can extract the embedded identifier and match it to the fan who received that specific copy.
+  </Step>
+</Steps>
+
+<Warning>
+  Steganographic watermarks survive most common re-encoding and screenshot attacks but are not indestructible. They provide strong evidence for leak attribution, not a guarantee against all possible circumvention.
+</Warning>
+
+## Media collections
+
+Media collections in `media_collections` group assets into sellable bundles:
+
+- **PPV bundles** — a set of images or videos sold together as a pay-per-view package
+- **Themed drops** — curated sets released around a specific theme or event
+- **Exclusive packs** — subscriber-tier content groups with access gating
+
+Each collection has a title, description, pricing, and access tier. Assets are linked to collections via `media_asset_usages` — one asset can appear in multiple collections.
+
+## Asset intelligence
+
+Every uploaded asset in `media_assets` can carry AI-generated metadata:
+
+| Field | Description |
+|---|---|
+| `ai_description` | A natural-language description of the image or video content, generated by Ollama |
+| `transcription_text` | Full transcription of spoken audio in video files |
+| Taxonomy tags | Automatic classification against the 3,205-node adult content taxonomy |
+
+Asset intelligence is generated asynchronously as a post-processing step after the initial upload. The `ai_description` feeds the content search index and the agent's context when discussing or recommending specific assets. Transcriptions make video content searchable by spoken word.
+
+<Note>
+  All AI inference for asset intelligence runs locally via Ollama. No image or video is sent to an external API for description or transcription.
+</Note>
+
+## Schedulers
+
+The media worker runs three internal schedulers alongside the queue consumers:
+
+| Scheduler | Interval | Purpose |
+|---|---|---|
+| `post_scheduler` | Every 60 seconds | Checks `scheduled_posts` for due posts and enqueues `publish_post` jobs |
+| `scrape_scheduler` | Every 6 hours | Triggers periodic platform stat scrapes for all connected accounts |
+| `job_monitor` | Every 5 minutes | Checks for stalled or failed jobs and alerts via the diagnostics system |

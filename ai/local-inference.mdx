@@ -1,0 +1,216 @@
+---
+title: Local Ollama Inference
+description: How GenieHelper runs three Ollama models on a single 16 GB CPU server, manages context windows, prevents RAM exhaustion, and hydrates agent skills just-in-time.
+---
+
+All LLM inference in GenieHelper is CPU-bound and runs locally via Ollama. This page covers model setup, the role each model plays, how `genieChat.js` routes requests, how the context window is managed under a 16 GB RAM ceiling, and how JIT skill hydration keeps the agent competent without blowing the context budget.
+
+## Installing Ollama and pulling models
+
+<Steps>
+  <Step title="Install Ollama">
+    Ollama runs as a systemd service on the server. Install from the official script:
+
+    ```bash
+    curl -fsSL https://ollama.ai/install.sh | sh
+    ```
+
+    Verify the service is running:
+
+    ```bash
+    systemctl status ollama
+    ollama list
+    ```
+  </Step>
+  <Step title="Pull the three GenieHelper models">
+    ```bash
+    # Orchestrator / tool planner
+    ollama pull dolphin3:8b-llama3.1-q4_K_M
+
+    # Uncensored content writer
+    ollama pull dolphin-mistral:7b
+
+    # Primary agent (code, JSON, chat)
+    ollama pull qwen-2.5:latest
+    ```
+
+    Combined disk footprint is approximately 12–14 GB. Ensure the NVMe has sufficient headroom before pulling.
+  </Step>
+  <Step title="Verify Ollama is reachable">
+    Ollama listens on `http://127.0.0.1:11434` by default. The MCP server and Action Runner both hit this endpoint.
+
+    ```bash
+    curl http://127.0.0.1:11434/api/tags
+    ```
+
+    The response should list all three models as available.
+  </Step>
+</Steps>
+
+## The three models in detail
+
+<AccordionGroup>
+  <Accordion title="dolphin3:8b-llama3.1-q4_K_M — orchestrator">
+    **Role:** Multi-step reasoning, tool planning, ACTION tag emission.
+
+    **Why this model:** Dolphin 3 is fine-tuned for instruction following and function-calling-style tasks. It reliably structures multi-step plans and emits the `[ACTION:slug:{"params"}]` tags that the Action Runner intercepts.
+
+    **RAM footprint:** ~5 GB at q4_K_M quantization.
+
+    **Typical latency:** 3–6 s/call on CPU.
+
+    **Use cases:**
+    - Decomposing a creator request ("scrape my OnlyFans stats and draft a post") into sequential ACTION steps
+    - Deciding which BullMQ job type to enqueue
+    - Multi-step Stagehand navigation flows
+  </Accordion>
+
+  <Accordion title="dolphin-mistral:7b — content writer">
+    **Role:** Uncensored adult content drafting.
+
+    **Why this model:** Dolphin Mistral is a Mistral 7B fine-tune with the safety filters removed. It writes captions, fan messages, custom request responses, and post concepts in the creator's configured voice without refusing adult content.
+
+    **RAM footprint:** ~4.5 GB.
+
+    **Typical latency:** 2–4 s/call on CPU.
+
+    **Use cases:**
+    - Caption generation for media posts
+    - Fan message replies (per-fan voice persona applied via system prompt)
+    - Custom content request descriptions
+    - Creator persona drafting
+
+    <Warning>
+      This model has no content policy. All generation is governed solely by the creator's configured content boundaries stored in `content_boundaries` in Directus. The system enforces those boundaries at the prompt layer, not via model filtering.
+    </Warning>
+  </Accordion>
+
+  <Accordion title="qwen-2.5:latest — primary agent">
+    **Role:** AnythingLLM agent workspace, code generation, structured JSON.
+
+    **Why this model:** Qwen 2.5 7B has strong instruction following, produces reliable JSON output, and is the default model for MCP tool calls via the `ai.ollama` plugin.
+
+    **RAM footprint:** ~4.8 GB pinned at idle.
+
+    **Typical latency:** 2–5 s/call on CPU.
+
+    **Use cases:**
+    - Primary chat agent for creator sessions
+    - Code generation for automation rules
+    - JSON-structured data extraction via Stagehand
+    - Tool call routing through AnythingLLM's agent workspace
+
+    **Known limitation:** Qwen 2.5 7B cannot reliably call JSON tool schemas in a way that satisfies AnythingLLM's tool-call format. This is why the Action Runner pattern exists — see [Action Runner](/ai/action-runner).
+  </Accordion>
+</AccordionGroup>
+
+## Model selection in genieChat.js
+
+The routing logic lives in `server/endpoints/api/genieChat.js`. The decision tree is straightforward:
+
+```javascript
+// Simplified from genieChat.js
+async function selectBackend(req) {
+  const user = req.directusUser;
+
+  // PowerAdmin bypass: admin accounts get Claude API
+  if (user?.admin_access === true) {
+    return { provider: 'anthropic', apiKey: process.env.ANTHROPIC_API_KEY };
+  }
+
+  // All regular creator sessions: local Ollama
+  return { provider: 'ollama', url: process.env.OLLAMA_URL };
+}
+```
+
+Within Ollama sessions, model selection for specific subtasks follows the roles above. The `OLLAMA_MODEL` environment variable sets the default (fallback: `qwen-2.5:latest`), and the `ai.ollama` MCP plugin passes `model` explicitly per call.
+
+## Context window management
+
+The 16 GB RAM ceiling imposes a hard constraint on how much context can be active at once. The system manages this through three mechanisms:
+
+### BullMQ concurrency:1
+
+All three BullMQ queues — `media-jobs`, `scrape-jobs`, and `onboarding-jobs` — run with `concurrency: 1`. This prevents multiple Ollama inference calls from stacking up and saturating RAM.
+
+```javascript
+// media-worker/index.js
+const mediaWorker = new Worker('media-jobs', processor, {
+  connection: redis,
+  concurrency: 1, // Never change this — RAM ceiling is 16 GB
+});
+```
+
+### Shannon entropy gating
+
+Before injecting retrieved context into the agent prompt, nodes are ranked by information entropy. High-redundancy nodes are evicted. The `memory/retrieval/entropy/` module (`prune_to_budget`, `shannon_filter`, `context_pruner`) enforces this budget.
+
+The `eviction_report` surfaces what was dropped and why, so the agent knows what it doesn't have access to in the current session.
+
+### CRAG — Corrective RAG
+
+Retrieved context is graded for relevance before injection. Low-confidence retrievals do not enter the prompt — they either trigger a web search fallback or escalate to the HITL queue. The agent does not hallucinate answers from stale or irrelevant context.
+
+## JIT skill hydration
+
+GenieHelper stores 191 procedural skills across 11 categories in a DuckDB skill graph at `memory/core/agent_memory.duckdb`. The graph has 252 nodes and over 12,880 edges connecting skills by semantic proximity.
+
+**The problem with preloading:** Injecting all 191 skills into every session context would exhaust the context budget before the user types a word.
+
+**The solution:** Just-In-Time hydration. At session start, `surgical_context.py` runs stimulus propagation across the graph to surface only the skills relevant to the incoming task.
+
+```python
+# memory/core/surgical_context.py
+# Called from genieChat.js via child_process.exec
+def activate(task_description: str, top_n: int = 8) -> list[str]:
+    """
+    Run stimulus propagation from a task-derived seed node.
+    Returns top-N skill keys ranked by activation strength.
+    """
+    ...
+```
+
+### How the propagation works
+
+<Steps>
+  <Step title="Seed node selection">
+    The task description is embedded and matched against the skill graph. The closest node becomes the propagation seed.
+  </Step>
+  <Step title="Stimulus propagation">
+    Activation spreads from the seed node across graph edges using a Leaky Integrate-and-Fire (LIF) neuron model. Edges strengthen with use (Hebbian reinforcement), so frequently co-activated skills cluster together over time.
+  </Step>
+  <Step title="Top-N selection">
+    The top-N nodes by final activation score are returned as skill keys. Only these skills are loaded into the agent's context window for the session.
+  </Step>
+  <Step title="Skill injection">
+    Each selected skill is fetched via the `memory.recall` MCP tools (`activate_skills`, `get_skill`) and injected as structured context before the first agent turn.
+  </Step>
+</Steps>
+
+### Skill categories
+
+The 191 skills span 11 categories:
+
+| Category | Examples |
+|---|---|
+| Scraping | OnlyFans profile scrape, Fansly subscriber fetch |
+| Media | Watermark apply, teaser clip, thumbnail generate |
+| Publishing | Schedule post, publish to platform |
+| Connect | Platform auth, cookie injection, session rehydration |
+| Profile | Creator persona update, content boundaries |
+| Analytics | Earnings summary, engagement report |
+| Settings | Tier limits, API key rotation |
+| Comms | Fan message draft, broadcast segment |
+| Memory | Node activation, graph query |
+| Taxonomy | Tag content, map term, rebuild graph |
+| Admin | RBAC sync, user provisioning |
+
+<Tip>
+  To inspect the current skill graph, use the `memory.recall` MCP tools directly:
+
+  ```bash
+  # Via the MCP client
+  find_skills("onlyfans scraping")
+  get_skill("scrape-onlyfans-profile")
+  ```
+</Tip>

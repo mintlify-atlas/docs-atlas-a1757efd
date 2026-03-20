@@ -1,0 +1,160 @@
+---
+title: media.process
+description: 5-tool plugin for media pipeline integration — ffprobe validation, async watermarking, teaser clipping, thumbnail generation, and BullMQ job status polling.
+---
+
+**Plugin ID:** `media.process` | **Version:** 1.0.0 | **Tools:** 5
+
+The `media.process` plugin bridges the MCP agent layer and the BullMQ media worker. Synchronous tools run inline; asynchronous tools create `media_jobs` records in Directus and return a `job_id` immediately. The media worker (PM2 process `media-worker`) polls the collection every 1500 ms, executes FFmpeg or ImageMagick operations, and writes results back to Directus when complete.
+
+## Sync vs async
+
+| Tool | Mode | Blocks agent? |
+|---|---|---|
+| `media.validate` | sync | Yes — runs ffprobe inline, returns immediately |
+| `media.watermark` | async | No — queues job, returns `{ status: "queued", job_id }` |
+| `media.clip` | async | No — queues job, returns `{ status: "queued", job_id }` |
+| `media.thumbnail` | async | No — queues job, returns `{ status: "queued", job_id }` |
+| `media.job-status` | sync | Yes — polls single record, returns current state |
+
+## Async job pattern
+
+```
+ media.watermark / media.clip / media.thumbnail
+   └─ POST /items/media_jobs { operation, input_file_id, params, status: "queued" }
+   └─ returns { status: "queued", job_id }
+
+ media-worker (polls every 1500ms)
+   └─ picks up queued job
+   └─ executes FFmpeg / ImageMagick
+   └─ PATCH /items/media_jobs/{id} { status: "done" | "failed" }
+   └─ POST /items/media_job_outputs { job_id, file_id }
+
+ media.job-status(job_id)
+   └─ GET /items/media_jobs/{id}
+   └─ GET /items/media_job_outputs?filter[job_id][_eq]={id}
+   └─ returns { status, outputs: [{ file_id }] }
+```
+
+The agent should poll `media.job-status` in a loop with a reasonable interval (5–10 seconds) until `status` is `"done"` or `"failed"`.
+
+<Info>
+The media worker runs with `concurrency: 1` to prevent RAM exhaustion on the 16 GB server. Jobs are executed sequentially even if multiple are queued simultaneously.
+</Info>
+
+## Tools
+
+### `media.validate` — ffprobe analysis
+
+Runs ffprobe against a Directus file asset (authenticated via `MCP_SERVICE_TOKEN`) and returns technical metadata. Optionally validates the file against a named platform's upload spec.
+
+**Returns:**
+- `format` — container format (mp4, mov, webm, jpeg, png, etc.)
+- `duration` — duration in seconds (video/audio)
+- `width` / `height` — resolution in pixels
+- `bitrate` — total bitrate in kb/s
+- `codec` — video and audio codec names
+- `compliance` — (if platform specified) pass/fail per platform rule
+
+**Platform specs:**
+
+| Platform | Max size | Max duration | Min width | Formats |
+|---|---|---|---|---|
+| `onlyfans` | 10 GB | 60 min | 720 px | mp4, mov, avi, m4v, wmv, mkv |
+| `fansly` | 2 GB | 60 min | 720 px | mp4, mov, avi, mkv |
+| `instagram_feed` | 4 GB | 60 s | 640 px | mp4 |
+| `instagram_story` | 4 GB | 60 s | 640 px | mp4 (9:16 preferred) |
+| `tiktok` | 4 GB | 10 min | 720 px | mp4 (9:16 preferred) |
+
+<Note>
+`media.validate` requires `ffprobe` on the system PATH. It fetches the file directly from the Directus assets endpoint using the `MCP_SERVICE_TOKEN` Bearer header.
+</Note>
+
+### `media.watermark` — visible watermark overlay
+
+Queues an `apply_watermark` job on the BullMQ `media-jobs` queue. The media worker overlays a watermark image onto the source media using FFmpeg.
+
+**Parameters:**
+- `input_file_id` — Directus file UUID of the source media
+- `watermark_file_id` — Directus file UUID of the watermark image (PNG with transparency)
+- `position` — watermark position (`top-left`, `top-right`, `bottom-left`, `bottom-right`, `center`)
+- `opacity` — watermark opacity 0.0–1.0
+- `user_id` — creator UUID (enables tier gate in `create-item`)
+
+**Returns:** `{ status: "queued", job_id }`
+
+<Note>
+Steganographic (invisible) watermarking is handled separately via the `apply_steganographic_watermark` BullMQ job type. It is not exposed as an MCP tool — it is triggered directly by the media worker pipeline after visible watermarking completes.
+</Note>
+
+### `media.clip` — teaser clip generation
+
+Queues a `create_teaser` job. The media worker uses FFmpeg to extract a clip from a source video, optionally transcoding to a platform-specific format and bitrate.
+
+**Parameters:**
+- `input_file_id` — source video Directus file UUID
+- `start_seconds` — clip start time in seconds
+- `duration_seconds` — clip duration in seconds
+- `platform` — (optional) target platform for format/bitrate compliance (`onlyfans`, `fansly`, `tiktok`, `instagram_story`)
+- `user_id` — creator UUID
+
+**Returns:** `{ status: "queued", job_id }`
+
+### `media.thumbnail` — thumbnail generation
+
+Queues a `resize_image` job. Resizes and/or converts an image to a specified dimension and format.
+
+**Parameters:**
+- `input_file_id` — source image Directus file UUID
+- `width` — target width in pixels
+- `height` — target height in pixels (or `null` to preserve aspect ratio)
+- `format` — output format (`jpeg`, `png`, `webp`)
+- `quality` — compression quality 1–100
+- `user_id` — creator UUID
+
+**Returns:** `{ status: "queued", job_id }`
+
+### `media.job-status` — poll job completion
+
+Synchronously reads a `media_jobs` record and its associated `media_job_outputs` records. Returns the current job state and any output file IDs produced by the worker.
+
+**Parameters:**
+- `job_id` — the job UUID returned by an async tool
+
+**Returns:**
+```json
+{
+  "status": "done",
+  "job_id": "abc123",
+  "outputs": [
+    { "file_id": "def456" }
+  ]
+}
+```
+
+**Status values:** `queued` | `processing` | `done` | `failed`
+
+## Typical agent flow
+
+```
+1. media.validate(file_id, platform="onlyfans")
+   └─ check compliance → if non-compliant, use media.clip to fix duration
+
+2. media.watermark(file_id, watermark_id, position="bottom-right")
+   └─ returns { job_id: "wm-001" }
+
+3. poll media.job-status("wm-001") every 5s
+   └─ status: "done" → watermarked_file_id = outputs[0].file_id
+
+4. cms.directus create-item("scheduled_posts", { file_id: watermarked_file_id, ... })
+```
+
+## Configuration
+
+| Setting | Value |
+|---|---|
+| Auth | `MCP_SERVICE_TOKEN` (via `services.directus`) |
+| Timeout | 30,000 ms |
+| Concurrency | 5 |
+| Worker poll interval | 1,500 ms |
+| Processing backend | FFmpeg + ImageMagick (local, PATH-required) |

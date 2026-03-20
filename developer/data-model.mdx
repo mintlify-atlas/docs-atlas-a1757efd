@@ -1,0 +1,205 @@
+---
+title: Data model
+description: Reference for all GenieHelper Directus collections, organized by domain, with design principles and known evolution notes.
+---
+
+GenieHelper's data model is managed by Directus 11 on PostgreSQL 16. All collections are defined in Directus and access is controlled by row-level policies enforcing `user_id=$CURRENT_USER` isolation on all creator-owned data.
+
+The full Sprint 11 model was deployed on 2026-03-16 — 38 new collections, 41 field additions.
+
+<Note>
+`scraped_media` was dropped on 2026-03-16. `media_assets` is the canonical media collection going forward. Any code or skill that references `scraped_media` must be updated.
+</Note>
+
+---
+
+## Domain overview
+
+<CardGroup cols={2}>
+  <Card title="Fan CRM" icon="users">
+    14 collections. The full per-fan relationship model — identity, subscriptions, memory, scoring, segments, transactions, and messaging.
+  </Card>
+  <Card title="Publishing" icon="send">
+    5 collections. Content lifecycle from idea through draft, scheduling, and performance snapshot.
+  </Card>
+  <Card title="Media" icon="film">
+    5 collections. Asset storage, collections/bundles, job tracking, and processing presets.
+  </Card>
+  <Card title="Campaigns & Analytics" icon="bar-chart-2">
+    6 collections. Campaign management, per-platform performance, earnings history, creator goals, and account growth curves.
+  </Card>
+  <Card title="User & Platform" icon="settings">
+    6 collections. Creator profile, platform connections, health checks, subscription tier history, and usage counters.
+  </Card>
+  <Card title="Automation & Messaging" icon="zap">
+    7 collections. Rule-based automation chains, audit logs, message templates, broadcast delivery tracking, and the HITL approval queue.
+  </Card>
+</CardGroup>
+
+---
+
+## Fan CRM
+
+The fan CRM is the most complex domain. The core principle is that a fan is a person, not a subscriber instance. One real person may have multiple accounts across platforms — the model captures this distinction.
+
+| Collection | Purpose |
+|---|---|
+| `fan_profiles` | The canonical fan record. One row per real person, regardless of platform accounts. Carries composite engagement data and scoring summaries. |
+| `fan_platform_accounts` | Platform-specific account records linked to a `fan_profile`. `platform_fan_id` is the dedup key — the canonical identifier for a fan on a given platform. |
+| `fan_subscriptions` | Current subscription state per fan per platform. Tracks tier, renewal date, and subscription status. |
+| `fan_subscription_events` | Append-only event log for every subscription lifecycle event — rebill, cancellation, trial start, win-back. Never update rows; always insert. |
+| `fan_identity_links` | Cross-platform identity links. Connects two `fan_platform_accounts` that have been confirmed to belong to the same `fan_profile`. |
+| `fan_memories` | Durable per-fan facts — preferences, personal details, key dates, conversation facts. Injected into message drafts at generation time. |
+| `fan_notes` | Creator-authored freeform notes on a fan. Not injected automatically; surfaced in the fan dossier panel. |
+| `fan_scores` | Scored dimensions per fan: churn risk, predicted LTV, upsell readiness, loyalty. Recomputed periodically by the analytics pipeline. |
+| `fan_segments` | Dynamic audience segment definitions. Each segment has a rule set (behavior, score, spend, lifecycle stage) that is evaluated at query time. |
+| `fan_segment_members` | Materialized segment membership. Populated by the segment evaluation job; drives broadcast targeting. |
+| `fan_transactions` | Purchase history — PPV, tips, paid DMs, custom requests. The financial ledger for each fan relationship. |
+| `fan_custom_requests` | Bespoke paid content requests submitted by fans. Tracks negotiation stage, agreed price, fulfillment status, and payout. |
+| `fan_tag_values` | Creator-defined tag assignments per fan. Tags power automation targeting and manual segmentation. |
+| `fan_messages` | Inbound and outbound message records per fan. Carries sentiment scores, response times, and draft linkage. |
+
+<Tip>
+When deduplicating fans across platforms, always key on `fan_platform_accounts.platform_fan_id`, not on `fan_profiles.id`. The profile ID is an internal surrogate key; the platform fan ID is the stable external identity.
+</Tip>
+
+---
+
+## Publishing
+
+The publishing domain covers the full content lifecycle. Ideas become drafts; drafts get scheduled; scheduled posts are published; published posts get performance snapshots.
+
+| Collection | Purpose |
+|---|---|
+| `content_posts` | Post drafts and published posts. Carries caption, hashtags, CTA links, audience targeting, platform targets, and A/B variant links. |
+| `content_series` | Ongoing editorial tracks (e.g., "Monday Motivation", "Weekly Check-In"). A series is a recurring content theme, not a promotional campaign. |
+| `content_ideas` | AI-generated and creator-submitted content ideas. Scored by the AI, tagged against the taxonomy, and promotable to draft with one action. |
+| `scheduled_posts` | The publish queue. The `post_scheduler` (60-second interval) polls this collection for due items and enqueues `publish_post` jobs. |
+| `post_performance_snapshots` | Point-in-time engagement metrics per post — views, likes, comments, PPV revenue. Append-only; one row per scrape event per post. |
+
+<Note>
+Campaigns and series serve different purposes. A campaign is bounded (start date, end date, revenue target, promotional goal). A series is an ongoing editorial track with no defined end. Do not conflate them in the data model or the UI.
+</Note>
+
+---
+
+## Media
+
+The media domain manages every uploaded or downloaded asset and the jobs that process them.
+
+| Collection | Purpose |
+|---|---|
+| `media_assets` | Canonical asset record for every piece of media. Carries `transcription_text` (for audio/video) and `ai_description` (generated by Ollama). This is the single source of truth for media — `scraped_media` was dropped in favor of this collection. |
+| `media_collections` | PPV bundles, themed drops, and exclusive packs. A collection groups assets under a price point and access tier. |
+| `media_asset_usages` | Join table linking assets to posts, campaigns, or collections. Tracks where each asset has been used. |
+| `media_jobs` | BullMQ job records. Written at enqueue time; updated by the media worker on completion or failure. The `job_monitor` scheduler watches this table for stalled jobs. |
+| `media_presets` | Named processing presets (watermark style, output resolution, clip duration, metadata fields to strip). Referenced by media processing jobs. |
+
+---
+
+## Campaigns & analytics
+
+The analytics domain separates three distinct data shapes: per-post engagement snapshots, period earnings rollups, and account-level time series.
+
+| Collection | Purpose |
+|---|---|
+| `campaigns` | Bounded promotional campaigns with start/end dates, revenue targets, and platform attribution windows. Distinct from content series. |
+| `campaign_platform_performance` | Per-platform performance breakdown per campaign. Tracks impressions, conversions, and attributed revenue per platform per campaign. |
+| `creator_earnings` | Period-by-period revenue rollup by platform and content type. The financial summary ledger for a creator account. |
+| `creator_goals` | Creator-defined revenue, subscriber, and engagement targets with automatic progress tracking against current metrics. |
+| `platform_stats_snapshots` | Historical account-level time series — follower count, subscriber count, churn rate. Append-only; one row per scrape per platform. |
+| `post_performance_snapshots` | (Shared with Publishing domain.) Per-post engagement snapshots — used here for campaign attribution analytics. |
+
+<Info>
+The three analytics collection types answer different questions: `post_performance_snapshots` answers "how did this post perform?", `creator_earnings` answers "what did I earn this period?", and `platform_stats_snapshots` answers "how has my account grown over time?". Do not mix these into a single denormalized table.
+</Info>
+
+---
+
+## User & platform
+
+This domain covers creator account state and the platform connection layer.
+
+| Collection | Purpose |
+|---|---|
+| `creator_profiles` | The creator's own profile — platform accounts, encrypted credentials, onboarding state, persona configuration. The `onboarding_state` field drives the registration state machine. |
+| `platform_connections` | Active connection records per platform per creator. Carries auth tokens (AES-256-GCM encrypted), session state, and current connection health. |
+| `platform_stats_snapshots` | (Shared with Analytics domain.) Account-level time series — stored here, queried from both domains. |
+| `platform_health_checks` | Per-platform auth and session health log. Written by the `scrape_scheduler` on every scrape cycle. Surfaced in the platform dock panel. |
+| `subscription_events` | Append-only tier change ledger. Every upgrade, downgrade, trial start, and cancellation is recorded here. Never update rows. |
+| `user_usage_counts` | Current-period operation counts per creator. Read by `subscriptionValidator.js` to enforce `tier_rate_limits.json` quotas. |
+
+---
+
+## Automation & messaging
+
+The automation domain provides full auditability from rule definition through per-fan action execution.
+
+| Collection | Purpose |
+|---|---|
+| `automation_rules` | Rule definitions. Each rule has a trigger (event type), conditions (fan attributes, scores, behaviors), and an action chain. Rules can be paused without deletion. |
+| `automation_rule_runs` | Append-only execution log. One row per rule evaluation, recording trigger time, matched fan count, and run outcome. Never update rows. |
+| `automation_rule_actions` | Per-fan action records generated by a rule run. One row per fan per action — the lowest-level audit trail. Never update rows. |
+| `message_templates` | Reusable message templates with platform variants, tone controls, and variable substitution slots. Shared across campaigns and automations. |
+| `message_broadcasts` | Broadcast send events targeting a fan segment. Carries template reference, segment snapshot, scheduled time, and delivery summary counters. |
+| `message_broadcast_deliveries` | Per-fan delivery records for a broadcast. Tracks delivery status, read time, and conversion event per fan per broadcast. |
+| `hitl_action_queue` | Human-in-the-loop approval queue. Agent actions that require creator review before execution are written here. The HITL gate is pre-execution — nothing in this queue has run yet. |
+
+<Warning>
+The `hitl_action_queue` is a pre-execution approval gate. Items in this queue have not been executed. Do not read this collection as an audit log of completed actions — use `automation_rule_actions` for that purpose.
+</Warning>
+
+---
+
+## Key design principles
+
+<AccordionGroup>
+  <Accordion title="Fan-centric model">
+    The canonical dedup key for a fan is `fan_platform_accounts.platform_fan_id`, not `fan_profiles.id`. A single real person may have multiple platform accounts. The `fan_profiles` table is the identity hub; `fan_platform_accounts` is where the external platform identity lives. Build all fan dedup logic around the platform account, not the profile.
+  </Accordion>
+  <Accordion title="Append-only audit logs">
+    The following collections are append-only. Rows are never updated or deleted in application logic:
+    - `subscription_events` — tier change ledger
+    - `fan_subscription_events` — fan subscription lifecycle events
+    - `automation_rule_runs` — rule execution log
+    - `automation_rule_actions` — per-fan action log
+    - `post_performance_snapshots` — engagement snapshots
+    - `platform_stats_snapshots` — account growth time series
+
+    If you find code that updates rows in these collections, it is a bug.
+  </Accordion>
+  <Accordion title="Operational state vs. time series">
+    Current state lives on the primary record (e.g., current follower count on `platform_connections`). History lives in `_snapshots` and `_events` tables. The operational record is updated in place; the time series is append-only. These two patterns must not be mixed into the same table.
+  </Accordion>
+  <Accordion title="Campaign vs. series">
+    Campaigns are bounded promotional events with start dates, end dates, revenue targets, and attribution windows. Series are ongoing editorial tracks with no defined end. They serve different product purposes and must remain separate collections. Do not merge them.
+  </Accordion>
+  <Accordion title="Analytics layer separation">
+    Three analytics granularities are modeled separately:
+    - `post_performance_snapshots` — per-post engagement metrics
+    - `creator_earnings` — period revenue rollups (month/week/billing cycle)
+    - `platform_stats_snapshots` — account-level growth curves
+
+    Queries that cross these layers should join, not denormalize.
+  </Accordion>
+  <Accordion title="HITL gate">
+    `hitl_action_queue` is a pre-execution approval queue, not an audit log. Items are written before the action runs. The agent blocks and waits for creator approval before continuing. Once approved or rejected, the item's status is updated and the agent resumes. Completed actions are recorded in `automation_rule_actions`, not here.
+  </Accordion>
+</AccordionGroup>
+
+---
+
+## Known gaps (Sprint 12 candidates)
+
+The following collections are identified as missing and are candidates for Sprint 12:
+
+| Collection | Domain | Purpose |
+|---|---|---|
+| `fan_import_runs` | Fan CRM | Audit log for bulk fan import operations |
+| `creator_goal_snapshots` | Analytics | Point-in-time progress snapshots for creator goals |
+| `campaign_content_performance` | Analytics | Per-content-piece performance within a campaign |
+
+Pending resolution:
+- `taxonomy_mapping` vs `taxonomy_mappings` — one is a duplicate; the dead one needs to be identified and dropped.
+- `creator_profiles` scope — field audit needed to confirm which fields belong here vs. on `platform_connections`.
+- `content_requests` — undefined status; either define the schema or deprecate in favor of `fan_custom_requests`.

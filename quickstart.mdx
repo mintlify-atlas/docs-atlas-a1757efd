@@ -1,80 +1,176 @@
 ---
 title: "Quickstart"
-description: "Start building awesome documentation in minutes"
+description: "Go from account creation to your first AI-drafted fan message in under 10 minutes."
 ---
 
-## Get started in three steps
+GenieHelper is invite-gated and self-hosted. You need an invite code before you can register. Once you're in, your data lives on our dedicated server — not in anyone else's cloud.
 
-Get your documentation site running locally and make your first customization.
+<Note>
+  GenieHelper runs on an IONOS dedicated server (Ubuntu 24, 16GB RAM, 1TB NVMe). Your credentials, fan data, and AI interactions never leave that infrastructure.
+</Note>
 
-### Step 1: Set up your local environment
+## Prerequisites
 
-<AccordionGroup>
-  <Accordion icon="copy" title="Clone your docs locally">
-    During the onboarding process, you created a GitHub repository with your docs content if you didn't already have one. You can find a link to this repository in your [dashboard](https://dashboard.mintlify.com).
-    
-    To clone the repository locally so that you can make and preview changes to your docs, follow the [Cloning a repository](https://docs.github.com/en/repositories/creating-and-managing-repositories/cloning-a-repository) guide in the GitHub docs.
-  </Accordion>
-  <Accordion icon="rectangle-terminal" title="Start the preview server">
-    1. Install the Mintlify CLI: `npm i -g mint`
-    2. Navigate to your docs directory and run: `mint dev`
-    3. Open `http://localhost:3000` to see your docs live!
-    
-    <Tip>Your preview updates automatically as you edit files.</Tip>
-  </Accordion>
-</AccordionGroup>
+Before you begin, make sure you have:
 
-### Step 2: Deploy your changes
-
-<AccordionGroup>
-  <Accordion icon="github" title="Install our GitHub app">
-    Install the Mintlify GitHub app from your [dashboard](https://dashboard.mintlify.com/settings/organization/github-app).
-    
-    Our GitHub app automatically deploys your changes to your docs site, so you don't need to manage deployments yourself.
-</Accordion>
-<Accordion icon="palette" title="Update your site name and colors">
-    For a first change, let's update the name and colors of your docs site.
-
-    1. Open `docs.json` in your editor.
-    2. Change the `"name"` field to your project name.
-    3. Update the `"colors"` to match your brand.
-    4. Save and see your changes instantly at `http://localhost:3000`.
-
-    <Tip>Try changing the primary color to see an immediate difference!</Tip>
-  </Accordion>
-</AccordionGroup>
-
-### Step 3: Go live
-
-<Accordion icon="rocket" title="Publish your docs">
-  1. Commit and push your changes.
-  2. Your docs will update and be live in moments!
-</Accordion>
-
-## Next steps
-
-Now that you have your docs running, explore these key features:
+- **An invite code** — GenieHelper registration is closed to the public. Get a code from the team or a referring creator.
+- **A subscription tier selected** — you can start on the free Starter tier and upgrade at any time. See [Pricing](/pricing) for a full comparison.
+- **A supported platform account** — OnlyFans, Fansly, Instagram, or TikTok. You'll connect one during setup.
 
 <CardGroup cols={2}>
+  <Card title="Starter — Free" icon="seedling">
+    Try the platform at no cost. Limited platform connections and queue size.
+  </Card>
+  <Card title="Creator — $49/mo" icon="user">
+    Solo creators. Full AI drafting, scheduling, and fan CRM.
+  </Card>
+  <Card title="Pro — $149/mo" icon="bolt">
+    Power users. Advanced fan CRM with all 71 engagement fields, automation rules.
+  </Card>
+  <Card title="Studio — $499/mo" icon="building">
+    Agencies and multi-account operations. Full access, team management.
+  </Card>
+</CardGroup>
 
-<Card title="Write Content" icon="pen-to-square" href="/essentials/markdown">
-  Learn MDX syntax and start writing your documentation.
-</Card>
+---
 
-<Card title="Customize style" icon="palette" href="/essentials/settings">
-  Make your docs match your brand perfectly.
-</Card>
+## Getting started
 
-<Card title="Add code examples" icon="square-code" href="/essentials/code">
-  Include syntax-highlighted code blocks.
-</Card>
+<Steps>
 
-<Card title="API documentation" icon="code" href="/api-reference/introduction">
-  Auto-generate API docs from OpenAPI specs.
-</Card>
+  <Step title="Register your account">
+    Registration is invite-gated. Send a `POST` request to the registration endpoint with your invite code:
 
+    ```http
+    POST https://geniehelper.com/api/register
+    Content-Type: application/json
+
+    {
+      "email": "you@example.com",
+      "password": "your-password",
+      "invite_code": "GENIE-XXXX"
+    }
+    ```
+
+    On success, you receive a Directus JWT that authenticates you across the entire platform — the dashboard, the AI chat endpoint, and all API calls.
+
+    <Tip>
+      The registration endpoint is rate-limited to 10 requests per 15 minutes per IP. If you're testing, don't hammer it.
+    </Tip>
+
+    After registering, navigate to **geniehelper.com** and log in with your email and password. Your account is provisioned with:
+
+    - A dedicated AI workspace (row-isolated — no data bleeds between creators)
+    - A creator profile ready for onboarding
+    - Usage quota initialized at your selected tier
+  </Step>
+
+  <Step title="Complete the onboarding flow">
+    When you first log in, the **Center Stage** switches to `onboarding` mode. The AI guides you through setup — you don't navigate menus, the interface adapts to where you are in the process.
+
+    The onboarding flow collects:
+
+    - **Your creator persona** — writing voice, tone preferences, banned phrases, content style. This is what the AI uses to sound like _you_, not a generic chatbot.
+    - **Content boundaries** — what you will and won't create, mapped to your pricing tiers.
+    - **Platform credentials** — encrypted and stored locally using AES-256-GCM. GenieHelper never transmits these off the server.
+
+    <Info>
+      Onboarding is a state machine: `EXTENSION_INSTALL → DATA_COLLECTION → PROCESSING → COMPLETE`. You can pause and resume at any step — your progress is saved.
+    </Info>
+  </Step>
+
+  <Step title="Connect your first platform">
+    Once onboarding completes, open the **Left Wing** and select **Platform Dock** (`platform-dock` panel) from the nav rail.
+
+    GenieHelper supports four platforms for connection:
+
+    | Platform | What it does |
+    |----------|-------------|
+    | **OnlyFans** | Scrapes stats, tracks engagement, manages fan messages, monitors subscriptions |
+    | **Fansly** | Same capabilities as OnlyFans — fan CRM, earnings data, messaging |
+    | **Instagram** | Follower growth tracking, post performance, content scheduling |
+    | **TikTok** | Engagement metrics, video performance, audience analytics |
+
+    To connect a platform:
+
+    1. Click **Add Platform** in the Platform Dock panel.
+    2. Select your platform (OnlyFans, Fansly, Instagram, or TikTok).
+    3. Enter your platform credentials. These are encrypted immediately with AES-256-GCM and stored in the server's PostgreSQL vault — they are never logged or transmitted in plaintext.
+    4. GenieHelper uses browser automation (Stagehand + Playwright) to verify the connection. If the platform requires an interactive login (CAPTCHA, 2FA), the Center Stage switches to `scrape_alert` mode and prompts you to complete the login manually.
+
+    <Warning>
+      Some platforms actively block headless browsers. If you see a **Scrape Alert** appear in the Center Stage, follow the on-screen prompt to complete the login in the browser session GenieHelper opens for you. This is normal — it's the Human-in-the-Loop (HITL) flow.
+    </Warning>
+
+    After a successful connection, the **Top Rail** shows the platform health status. Green means your session is active and data is flowing.
+  </Step>
+
+  <Step title="Trigger your first scrape">
+    With a platform connected, tell GenieHelper to pull your stats. Type in the AI chat (the Center Stage in `chat` mode):
+
+    ```
+    Scrape my OnlyFans stats
+    ```
+
+    The agent handles everything without a single click:
+
+    1. The **Top Rail** updates to show `Scraping OnlyFans...` in active (amber) mode.
+    2. The **Right Wing** opens the **Live Scrape Feed** panel automatically — you can watch posts, subscriber counts, and engagement metrics arrive in real time.
+    3. When complete, the Top Rail goes green: `✓ 47 posts scraped` (or however many you have).
+
+    Your data is now in the platform. Fan profiles are created, content is tagged against GenieHelper's 3,205-node content taxonomy, and earnings history is initialized.
+  </Step>
+
+  <Step title="Send your first AI-drafted fan message">
+    This is where GenieHelper earns its keep. Navigate to the AI chat and type:
+
+    ```
+    Draft a re-engagement message for fans who haven't interacted in 30 days
+    ```
+
+    The agent:
+
+    1. Queries your fan CRM for inactive fans using your subscription tier's access level.
+    2. Pulls relevant fan memory — stored preferences, past conversation facts, key dates — and injects them into the prompt context.
+    3. Drafts a message in **your voice**, using the persona you defined during onboarding.
+    4. Switches the Center Stage to `fan_reply` mode, showing you the draft before anything is sent.
+
+    Review the draft. If it sounds right, approve it. If not, tell the agent what to change:
+
+    ```
+    Make it warmer and mention their subscription anniversary
+    ```
+
+    Once you approve, the message is queued for delivery. Every action is auditable — you can see the full trace from fan segment → draft → approval → send in the automation log.
+
+    <Tip>
+      Pro and Studio tier subscribers have access to **per-fan voice personas** — you can assign a distinct tone, vocabulary, and response style to individual fans. The AI writes "in character" for that specific relationship.
+    </Tip>
+  </Step>
+
+</Steps>
+
+---
+
+## What happens next
+
+After your first message, explore what the platform can do from the Center Stage chat. Some useful starting points:
+
+<CardGroup cols={2}>
+  <Card title="Schedule a post" icon="calendar" href="/platform/content-publishing">
+    Ask the agent to draft a caption and add it to your posting queue. AI-suggested timing included.
+  </Card>
+  <Card title="Explore your fan CRM" icon="users" href="/platform/fan-crm">
+    Open the Fan Dossier panel to see per-fan engagement scores, purchase history, and churn risk.
+  </Card>
+  <Card title="Set up automation rules" icon="bolt" href="/platform/overview">
+    Create trigger → condition → action chains: win-back messages, birthday greetings, upsell prompts after PPV purchases.
+  </Card>
+  <Card title="Review your analytics" icon="chart-bar" href="/platform/analytics">
+    Open the Analytics panel to see earnings history, subscriber growth curves, and campaign ROI.
+  </Card>
 </CardGroup>
 
 <Note>
-  **Need help?** See our [full documentation](https://mintlify.com/docs) or join our [community](https://mintlify.com/community).
+  The AI drives the interface — you don't navigate to panels. Ask the agent to show you something and the relevant panel opens automatically. The more you work in the chat, the more context the AI builds about your business.
 </Note>

@@ -1,0 +1,227 @@
+---
+title: "Job Queue"
+description: "POST /api/queue/media and GET /api/queue/stats — enqueue BullMQ jobs and poll status."
+---
+
+The queue API wraps the BullMQ job system that powers GenieHelper's media processing, platform scraping, and onboarding pipelines. Jobs are consumed by the `media-worker` process.
+
+<Info>
+  All three BullMQ queues run at **concurrency:1**. This is a deliberate constraint — the server has 16GB RAM, and parallel media or LLM jobs would cause RAM exhaustion. Jobs execute sequentially per queue.
+</Info>
+
+## Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `GET` | `/api/queue/stats` | Queue depths, job counts, and taxonomy cache status |
+| `POST` | `/api/queue/media` | Enqueue a job that has already been created in Directus |
+| `POST` | `/api/queue/retry/:jobId` | Re-enqueue a failed job at elevated priority |
+| `POST` | `/api/queue/taxonomy/invalidate` | Bust the taxonomy DuckDB cache |
+
+---
+
+## GET /api/queue/stats
+
+Returns the current depth and job counts for all BullMQ queues, plus the taxonomy cache stats.
+
+```http
+GET /api/queue/stats
+Authorization: Bearer <directus_jwt>
+```
+
+### Response
+
+```json
+{
+  "ok": true,
+  "stats": {
+    "media-jobs": {
+      "waiting": 2,
+      "active": 1,
+      "completed": 147,
+      "failed": 3,
+      "delayed": 0
+    },
+    "scrape-jobs": {
+      "waiting": 0,
+      "active": 0,
+      "completed": 89,
+      "failed": 1,
+      "delayed": 0
+    },
+    "onboarding-jobs": {
+      "waiting": 0,
+      "active": 0,
+      "completed": 12,
+      "failed": 0,
+      "delayed": 0
+    }
+  },
+  "taxonomy_cache": {
+    "hits": 231,
+    "misses": 14,
+    "size": 191
+  }
+}
+```
+
+---
+
+## POST /api/queue/media
+
+Enqueues a media processing job. The caller is responsible for **creating the Directus `media_jobs` record first**, then calling this endpoint to push the job ID into BullMQ so the worker picks it up.
+
+```http
+POST /api/queue/media
+Authorization: Bearer <directus_jwt>
+Content-Type: application/json
+```
+
+<Warning>
+  Create the Directus record before calling this endpoint. The worker reads job details from Directus using the provided `jobId`. If the record does not exist, the worker will fail the job.
+</Warning>
+
+### Body
+
+<ParamField body="jobId" type="string" required>
+  The UUID of the existing `media_jobs` record in Directus.
+</ParamField>
+
+<ParamField body="operation" type="string" required>
+  The job type to execute. See the operations table below for valid values.
+</ParamField>
+
+<ParamField body="input_file_id" type="string">
+  Directus file ID for the input asset. Required for operations that process an existing uploaded file.
+</ParamField>
+
+<ParamField body="input_url" type="string">
+  URL of the input asset. Used for URL-based operations (e.g., scraping, remote downloads).
+</ParamField>
+
+<ParamField body="params" type="object">
+  Operation-specific parameters. Structure varies by job type (see operations table).
+</ParamField>
+
+<ParamField body="creator_profile_id" type="string">
+  Directus `creator_profiles` record ID. Used to scope output storage and watermark identity.
+</ParamField>
+
+<ParamField body="priority" type="number">
+  BullMQ priority. Lower numbers = higher priority. Default: `10`. Retried jobs use `5`.
+</ParamField>
+
+```json
+{
+  "jobId": "e4b0f1c2-3d45-6789-abcd-ef0123456789",
+  "operation": "apply_watermark",
+  "input_file_id": "a1b2c3d4-...",
+  "params": {
+    "watermark_text": "@creator",
+    "opacity": 0.4
+  },
+  "creator_profile_id": "f9e8d7c6-..."
+}
+```
+
+### Response
+
+<ResponseField name="ok" type="boolean">
+  `true` when the job was successfully enqueued.
+</ResponseField>
+
+<ResponseField name="bullJobId" type="string">
+  The BullMQ-assigned job ID for polling status directly against the Redis queue.
+</ResponseField>
+
+<ResponseField name="jobId" type="string">
+  The Directus `media_jobs` record ID (echoed from the request).
+</ResponseField>
+
+```json
+{
+  "ok": true,
+  "bullJobId": "bull:media-jobs:1042",
+  "jobId": "e4b0f1c2-3d45-6789-abcd-ef0123456789"
+}
+```
+
+### Subscription quota check
+
+Before enqueuing, the endpoint calls `canPerform(userId, operation)` from `subscriptionValidator.js`. If the user has exhausted their tier quota for the given operation, the job is rejected with a `403`:
+
+```json
+{
+  "error": "tier_limit_reached",
+  "reason": "limit_reached",
+  "message": "You have reached your plan limit for this feature. Upgrade to continue."
+}
+```
+
+The validator is fail-open for unexpected errors (i.e., a quota check failure does not block the job). Only explicit `limit_reached` or `not_in_tier` results reject the request.
+
+---
+
+## POST /api/queue/retry/:jobId
+
+Re-enqueues a failed job. The endpoint fetches the original job record from Directus, validates it is in `failed` or `error` status, and re-submits it to BullMQ with elevated priority (`5`).
+
+```http
+POST /api/queue/retry/e4b0f1c2-3d45-6789-abcd-ef0123456789
+Authorization: Bearer <directus_jwt>
+```
+
+| Status | Meaning |
+|--------|---------|
+| `200` | Job re-enqueued successfully |
+| `404` | Job not found in Directus |
+| `409` | Job is not in a failed state — cannot retry |
+
+---
+
+## Queues
+
+<CardGroup cols={2}>
+  <Card title="media-jobs" icon="film">
+    Image and video processing operations. FFmpeg/ImageMagick workers. concurrency:1.
+  </Card>
+  <Card title="scrape-jobs" icon="globe">
+    Browser automation jobs via Stagehand/PinchTab. Profile scraping, post performance, session management. concurrency:1.
+  </Card>
+  <Card title="onboarding-jobs" icon="user-check">
+    LLM-heavy onboarding pipeline jobs. ETL from scraped platform data into `user_nodes`. concurrency:1.
+  </Card>
+</CardGroup>
+
+## Job types
+
+### Media operations (`media-jobs`)
+
+| Operation | Input | Description |
+|-----------|-------|-------------|
+| `convert_image` | `input_file_id` | Convert image to a different format |
+| `resize_image` | `input_file_id` | Resize image to target dimensions |
+| `crop_image` | `input_file_id` | Crop image to bounding box |
+| `resize_video` | `input_file_id` | Resize video to target resolution |
+| `crop_video` | `input_file_id` | Crop video to bounding box |
+| `compress_video` | `input_file_id` | Re-encode video at lower bitrate |
+| `apply_watermark` | `input_file_id` | Apply visible watermark overlay |
+| `apply_steganographic_watermark` | `input_file_id` | Embed invisible fan-specific watermark |
+| `create_teaser` | `input_file_id` | Generate a short preview clip |
+| `strip_metadata` | `input_file_id` | Remove EXIF and metadata from file |
+
+### Scrape operations (`scrape-jobs`)
+
+| Operation | Input | Description |
+|-----------|-------|-------------|
+| `scrape_profile` | `creator_profile_id` | Scrape platform profile stats |
+| `scrape_post_performance` | `creator_profile_id` | Scrape per-post engagement metrics |
+| `publish_post` | `creator_profile_id` | Automated post submission to platform |
+
+### Onboarding operations (`onboarding-jobs`)
+
+Onboarding jobs follow the pattern `onboarding:<phase>` (e.g., `onboarding:extract`, `onboarding:classify`, `onboarding:embed`). These are triggered internally by the onboarding state machine, not directly by API consumers.
+
+<Note>
+  The `media-worker` implementation was split into an `operations/` module structure on 2026-03-15. Handlers live in `operations/media.js`, `operations/scrape.js`, `operations/publish.js`, and `operations/onboarding.js`, with shared helpers in `operations/helpers.js`.
+</Note>

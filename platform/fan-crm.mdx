@@ -1,0 +1,172 @@
+---
+title: Fan CRM
+description: GenieHelper's fan CRM tracks each fan as a person across every platform they use. This page covers fan profiles, memory injection, per-fan AI personas, fan scoring, dynamic segments, subscription lifecycle tracking, and custom content requests.
+---
+
+The fan CRM is the operational core of the business side of GenieHelper. It treats fans as people with histories, preferences, and relationships — not as subscriber IDs attached to a payment record. One fan can have accounts on OnlyFans and Fansly simultaneously; the CRM links them into a single canonical identity and tracks the full relationship across all platforms.
+
+<Info>
+  Fan CRM data is stored in per-user Directus collections with row-level isolation enforced by the `user_id=$CURRENT_USER` policy filter on all owned collections. Pro and Studio tiers unlock extended fan CRM access via the Directus Pro Policy.
+</Info>
+
+## Fan profiles
+
+Each fan is represented by a `fan_profiles` record — a canonical identity that can span multiple platform accounts. The profile carries 71 engagement fields covering:
+
+- Contact and identity data (display names, aliases, verified emails)
+- Engagement metrics (total spend, message count, response rate, content interactions)
+- Purchase history (PPV purchases, tip totals, custom content spend)
+- Behavioral signals (time of day activity, platform preferences, content category affinity)
+- Sentiment tracking (positive/negative message ratio, last contact sentiment)
+- Lifecycle stage (active subscriber, churned, win-back candidate, trial)
+- Creator notes and manual annotations
+- Follow-up task assignments
+
+### Cross-platform identity linking
+
+The canonical dedup key is `fan_platform_accounts.platform_fan_id` — the platform's own identifier for that fan — not the `fan_profiles` record itself. A single `fan_profiles` entry can be linked to multiple `fan_platform_accounts` records across different platforms.
+
+```
+fan_profiles (canonical identity)
+    └── fan_platform_accounts (OnlyFans handle)
+    └── fan_platform_accounts (Fansly username)
+    └── fan_identity_links (cross-platform match evidence)
+```
+
+Identity links in `fan_identity_links` record the evidence used to connect accounts — matching payment emails, shared usernames, or agent-inferred similarity — so the match is always auditable.
+
+## Fan memory injection
+
+Fan memory is how replies feel personal rather than templated. The system stores durable per-fan facts in the `fan_memories` collection and automatically surfaces them when drafting messages.
+
+### What gets stored
+
+- Pet names and nicknames the fan uses or prefers
+- Anniversaries and key dates (subscription anniversary, birthdays)
+- Stated preferences (content types they like, topics they mention often)
+- Personal details they have shared in conversation (job, city, hobbies)
+- Important past conversation facts (a trip they mentioned, a gift they sent)
+
+### How injection works
+
+When the agent is drafting a reply to a fan, it queries `fan_memories` for that fan's records and injects the relevant facts into the prompt context before generating the message. The creator does not need to remember — the system surfaces what matters for that specific conversation.
+
+<Tip>
+  Fan memories can be added manually from the FanDossierPanel or created automatically by the agent when it detects a durable fact in a conversation. Both paths write to `fan_memories`.
+</Tip>
+
+## Per-fan AI voice personas
+
+Each fan can have a customized AI persona assigned. When drafting messages to that fan, the agent writes in character for that specific relationship rather than using a single one-size-fits-all voice.
+
+A fan persona defines:
+
+- **Vocabulary rules** — words and phrases to use or avoid with this fan
+- **Tone** — warmth level, formality, playfulness, explicitness threshold
+- **Formatting preferences** — emoji use, message length, punctuation style
+- **Response style** — how direct, how personal, how promotional
+
+Fan personas are stored in the fan's profile and composed with the creator's own persona rules at draft time. The creator's voice is the base layer; the fan persona applies relationship-specific adjustments on top.
+
+## Fan scoring
+
+The platform automatically maintains four scores per fan, stored in the `fan_scores` collection:
+
+<AccordionGroup>
+  <Accordion title="Churn risk score">
+    Predicts the probability that this fan will cancel or lapse in the near term. Inputs include recency of interaction, engagement trend, payment history, and rebill success rate. High-risk fans can be targeted automatically by win-back automation rules.
+  </Accordion>
+  <Accordion title="Predicted lifetime value (LTV)">
+    A forward-looking estimate of total revenue from this fan based on spend history, tenure, engagement depth, and platform behavior patterns. Used to prioritize outreach and justify custom content negotiation.
+  </Accordion>
+  <Accordion title="Upsell readiness">
+    Scores how receptive a fan is likely to be to a PPV offer, custom content pitch, or tier upgrade. Based on purchase frequency, response to previous promotions, and spend trajectory.
+  </Accordion>
+  <Accordion title="Loyalty score">
+    A composite of tenure, consistency, spend level, and engagement depth. Identifies fans worth treating with more personalized attention — the top 5% who drive outsized revenue.
+  </Accordion>
+</AccordionGroup>
+
+Scores are computed by the agent and stored as structured records in `fan_scores`. They feed directly into dynamic audience segment conditions and automation rule triggers.
+
+## Dynamic audience segments
+
+Segments in `fan_segments` define reusable audience groups using filter conditions against fan fields and scores. Segments are dynamic — they re-evaluate membership on each use rather than storing a static list.
+
+Example segment conditions:
+
+- Fans with churn risk score above 0.7 who have been subscribed for more than 90 days
+- Fans with upsell readiness above 0.8 who have not purchased PPV in the last 30 days
+- Fans in the top loyalty quartile across all platforms
+- Inactive fans (no message in 14 days) on the Creator tier subscription
+
+Segment members are resolved at query time via `fan_segment_members`. Segments are the targeting layer for message broadcasts and automation rules.
+
+## Fan tags
+
+Creator-defined tags in `fan_tag_values` are free-form labels applied to fan profiles. Tags power manual categorization and can be used as targeting conditions in automation rules and message broadcasts.
+
+Common uses:
+- Mark fans who have requested a specific type of content
+- Flag fans who have been escalated to HITL handling
+- Track fans enrolled in a specific win-back sequence
+- Identify fans who have shared referrals
+
+## Subscription lifecycle tracking
+
+The subscription state for each fan-platform pair is tracked in `fan_subscriptions`. Every change to that state is recorded as an append-only event in `fan_subscription_events`.
+
+| Event type | Description |
+|---|---|
+| `subscribed` | New subscription started |
+| `rebilled` | Successful recurring payment |
+| `cancelled` | Fan cancelled |
+| `expired` | Subscription lapsed without renewal |
+| `resubscribed` | Fan returned after cancellation |
+| `trial_started` | Trial period began |
+| `trial_converted` | Trial converted to paid |
+| `win_back_sent` | Automated win-back message triggered |
+
+This event log feeds the churn risk model, the win-back automation rules, and the platform growth curve analytics.
+
+<Note>
+  `fan_subscription_events` is append-only. Never update or delete rows. Current subscription state lives on the `fan_subscriptions` record; history lives in the events table.
+</Note>
+
+## Custom content requests
+
+Fans can submit bespoke paid requests. The platform tracks the full lifecycle in `fan_custom_requests`:
+
+<Steps>
+  <Step title="Request received">
+    Fan submits a request via message or the platform's tip/request mechanism. The agent creates a `fan_custom_requests` record with status `pending_review`.
+  </Step>
+  <Step title="Negotiation">
+    Creator or agent negotiates price and scope. The record tracks agreed price, deadline, and content description. Status moves to `accepted` or `declined`.
+  </Step>
+  <Step title="Fulfillment">
+    Creator produces the content. The record links to the `media_assets` record when the file is ready. Status moves to `fulfilled`.
+  </Step>
+  <Step title="Delivery and payout">
+    Content is delivered to the fan. Payout is tracked against the request record. Status moves to `delivered`. Revenue flows into `creator_earnings`.
+  </Step>
+</Steps>
+
+## Key Directus collections
+
+| Collection | Purpose |
+|---|---|
+| `fan_profiles` | Canonical fan identity — 71 engagement fields |
+| `fan_platform_accounts` | Per-platform account records — dedup key is `platform_fan_id` |
+| `fan_subscriptions` | Current subscription state per fan-platform pair |
+| `fan_subscription_events` | Append-only subscription lifecycle event log |
+| `fan_identity_links` | Cross-platform identity match evidence |
+| `fan_memories` | Durable per-fan facts for memory injection |
+| `fan_notes` | Creator-authored freeform notes per fan |
+| `fan_scores` | Churn risk, LTV, upsell readiness, loyalty scores |
+| `fan_segments` | Dynamic audience segment definitions |
+| `fan_segment_members` | Resolved segment membership (computed at query time) |
+| `fan_transactions` | Per-fan transaction records (tips, PPV, custom content) |
+| `fan_custom_requests` | Custom content request lifecycle and payout tracking |
+| `fan_tag_values` | Creator-defined fan tags |
+| `fan_messages` | Message history per fan |

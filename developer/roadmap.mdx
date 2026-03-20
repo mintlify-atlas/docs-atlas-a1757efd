@@ -1,0 +1,158 @@
+---
+title: "Roadmap"
+description: "Open development work items, upcoming features, and post-MVP infrastructure plans for GenieHelper."
+---
+
+This roadmap covers active development tracks, open backlog items, and deferred post-MVP features. Items are grouped by the ticket series they originated from.
+
+<Info>
+  Contributions are welcome on all items listed here. See the [contributing guide](/developer/contributing) for setup instructions and code standards.
+</Info>
+
+## Active tracks
+
+### G-2: Backend skill thin-rewrites
+
+**28 remaining backend skill rewrites** into the canonical 3-layer format.
+
+Each skill must follow the format:
+1. **Context layer** — what the agent knows entering this skill (persona nodes, platform state, relevant history)
+2. **Tools layer** — which MCP tools are available and when to call them
+3. **Output schema** — structured output format for deterministic downstream processing
+
+Completed rewrites live in `agent-skills/`. The remaining 28 are in the legacy flat-prompt format and need migration.
+
+**Why this matters:** Thin skills + fat library (Sprint 7 architecture) enables the `skillRegistry.js` to compose multi-skill contexts at request time without blowing the context window.
+
+### S7-2 → S7-5: Schema and validation layer
+
+Four open sub-tasks from Sprint 7:
+
+| Ticket | Task |
+|--------|------|
+| S7-2 | Zod schemas for all Action Runner step types |
+| S7-3 | Payload resolvers for each step type (replaces ad-hoc object spreading) |
+| S7-4 | UI manifests — JSON descriptors for each action's form inputs in the dashboard |
+| S7-5 | Tier-rules wiring — connect S7-4 manifests to `tier_rate_limits.json` gating logic |
+
+### G-3: DuckDB ↔ Directus nightly ingest
+
+The DuckDB offline analytics dataset (~17GB, 10M records) needs a nightly pipeline to promote high-signal patterns into the live Directus knowledge graph:
+
+1. **Session → node promotion** — extract per-session engagement signals from DuckDB
+2. **Node scoring** — score nodes using Hebbian weight decay + recency
+3. **Graph promotion** — write qualified nodes to `user_nodes` in Directus via the `cms.directus` MCP
+4. **Taxonomy alignment** — map promoted nodes to `taxonomy_dimensions` concepts
+
+Implementation target: `memory/consolidation/nightly_ingest.py`
+
+### FP-Growth: Cross-user pattern mining
+
+Frequent-Pattern Growth mining over the aggregated fan engagement dataset. The goal is to surface platform-wide behavioral patterns that individual creators can benefit from without sharing raw data.
+
+- Implementation directory: `memory/consolidation/cross_user/`
+- Input: anonymized engagement event sequences from DuckDB
+- Output: pattern objects written to the `user_nodes` `Universe/` store with `source: cross_user_mining`
+- Privacy constraint: patterns must be k-anonymous (minimum support across k distinct users)
+
+This is the technical foundation for the "Collective Intelligence" feature on Pro and Studio tiers.
+
+### F-6 → F-12: Onboarding pipeline phases 6–12
+
+The onboarding pipeline uses PinchTab browser automation to collect a creator's existing platform data. Phases 1–5 are complete. The remaining 7 phases cover:
+
+| Phase | Description |
+|-------|-------------|
+| F-6 | Session validation and cookie refresh |
+| F-7 | Fan profile bulk scrape (pagination handling) |
+| F-8 | Post performance historical backfill |
+| F-9 | Message history extraction |
+| F-10 | Subscription event timeline |
+| F-11 | PPV and tip transaction history |
+| F-12 | Multi-platform deduplication and merge |
+
+All phases use PinchTab's 800-token-per-page extraction API (5–13x cheaper than screenshot-based approaches).
+
+### H-series: Platform publishing
+
+Automated content publishing to creator platforms. These are the highest-value features on the roadmap from a creator perspective.
+
+| Ticket | Platform | Status |
+|--------|----------|--------|
+| H-1 | OnlyFans post creation | Not started |
+| H-2 | OnlyFans story posting | Not started |
+| H-3 | Fansly post creation | Not started |
+| H-4 | Fansly story posting | Not started |
+| H-5 | Instagram feed post | Not started |
+| H-6 | Instagram Reels | Not started |
+
+All H-series publishing is implemented via PinchTab-controlled browser sessions. Platform credentials are stored via the [credentials API](/developer/api/credentials).
+
+<Warning>
+  Platform publishing interacts with live creator accounts. All H-series implementations require HITL (human-in-the-loop) confirmation before the first post to any platform. Do not implement silent auto-posting without HITL approval.
+</Warning>
+
+### J-series: E2E test suite
+
+No automated end-to-end tests currently exist. The J-series covers:
+
+| Ticket | Coverage |
+|--------|----------|
+| J-1 | Registration and workspace provisioning |
+| J-2 | Onboarding state machine phases 1–5 |
+| J-3 | Stream chat end-to-end (message → SSE stream → parsed response) |
+| J-4 | Media job lifecycle (enqueue → worker → Directus update) |
+| J-5 | Credential store/reveal round-trip |
+| J-6 | Subscription quota enforcement (all tiers) |
+| J-7 | RBAC sync webhook |
+
+Test framework: to be determined (Playwright for browser flows, Jest for API layer).
+
+---
+
+## Post-MVP
+
+These items are explicitly deferred until the platform reaches revenue. They are not blocked on technical work — only on cost justification.
+
+### GPU migration (Vast.ai RTX 4090)
+
+Current inference runs on CPU (Qwen 2.5 7B: ~2–5s/call, ~4.8GB RAM pinned). Once revenue supports it:
+
+- Migrate Ollama inference to Vast.ai RTX 4090
+- Expected speedup: 10–50x inference latency reduction
+- RAM freed: ~4.8GB back to the server for other processes
+- Model quantization review: larger models (13B, 70B) become viable
+
+This is the single highest-leverage infrastructure upgrade available.
+
+### PocketPal mobile app
+
+React Native mobile client via the Universal Plugin Interface (UPI):
+
+- iOS (TestFlight) + Android (direct APK)
+- OpenAI-compatible `llama.cpp` calls to the server
+- Tier-based RBAC feature gating mirroring the dashboard
+- Push notifications for fan engagement events
+
+Deferred because the web dashboard covers 90% of the use case and mobile adds maintenance overhead.
+
+### Backblaze B2 + Cloudflare CDN
+
+Current media storage is local NVMe. Post-MVP migration:
+
+- **Backblaze B2** — adult-content-permissive object storage (S3-compatible API)
+- **Cloudflare CDN** — edge caching for media delivery
+- **Migration scope:** update `media-worker` upload targets, update CDN URL resolution in config, verify cache headers
+
+The 1TB NVMe is sufficient for early creators. This migration triggers when storage utilization exceeds ~70%.
+
+---
+
+## Infrastructure constraints to keep in mind
+
+| Constraint | Impact |
+|-----------|--------|
+| **16GB RAM ceiling** | All memory allocation must respect this. BullMQ concurrency:1 exists because of it. |
+| **Zero-cost until revenue** | No cloud APIs, no managed DBs, no paid CDNs until the platform is self-sustaining. |
+| **Marketing: X/Twitter only** | All major platforms restrict adult-adjacent SaaS advertising. All copy stays SFW. |
+| **Sovereign AI principle** | All inference runs locally. Nothing leaves the VPS. No corporate content moderation. |

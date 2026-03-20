@@ -1,0 +1,138 @@
+---
+title: "Synaptic propagation"
+description: "How retrieved seed nodes activate semantically adjacent concepts through the taxonomy graph using a Leaky Integrate-and-Fire neuron model and Hebbian edge reinforcement."
+---
+
+Synaptic propagation is the fourth stage of GenieHelper's retrieval pipeline. After RRF fusion produces a ranked list of seed nodes, those seeds are used to activate neighboring concepts in the taxonomy graph — giving the agent associative memory without the creator needing to mention those concepts explicitly.
+
+## What problem this solves
+
+Vectors and keywords find what you asked for. They don't find what you should have asked for.
+
+A creator asks about scheduling a \"beach yoga\" post. The RRF stage correctly retrieves nodes tagged `beach yoga`. But context that might dramatically improve the agent's response — fitness content performance patterns, outdoor lighting scheduling tips, lifestyle audience engagement windows — is absent from the retrieved set because the creator didn't mention those terms.
+
+Synaptic propagation fixes this by spreading activation from the seed nodes outward through the taxonomy graph, following edges to semantically adjacent concepts.
+
+## The Leaky Integrate-and-Fire model
+
+GenieHelper implements LIF (Leaky Integrate-and-Fire) neurons as the propagation mechanism. Each knowledge graph node is modeled as a neuron with a **membrane potential**:
+
+- Seed nodes start with full charge (`initial_charge = 1.0`)
+- Each edge has a **weight** that determines how much charge is transmitted
+- Charge **leaks** at 85% retention per hop (`LEAK_RATE = 0.85`) — the further from a seed, the weaker the signal
+- Nodes accumulate charge from multiple incoming edges
+- A node **fires** and enters the context window when its potential crosses the threshold (`FIRE_THRESHOLD = 0.5`)
+- Signals below `MIN_SIGNAL = 0.02` are discarded as noise
+- Propagation stops after **3 hops** (`MAX_HOPS = 3`) to prevent runaway activation
+
+```python
+# memory/retrieval/synaptic/lif_neurons.py
+FIRE_THRESHOLD  = 0.5    # Potential required to fire into context
+LEAK_RATE       = 0.85   # Charge retained per propagation hop
+MIN_SIGNAL      = 0.02   # Signals below this are ignored
+MAX_HOPS        = 3      # Propagation depth cap
+```
+
+## Propagation walkthrough
+
+<Steps>
+  <Step title="Seed nodes activated">
+    RRF returns top-N nodes — for example: `[beach_yoga, outdoor_fitness, morning_routine]`. These become seeds with full initial charge (`1.0`).
+  </Step>
+  <Step title="Charge transmitted through edges">
+    For each seed node, the propagation engine looks up all outbound edges in DuckDB. It transmits `signal × edge_weight × LEAK_RATE` to each neighbor. A `beach_yoga` node with a strong CO_OCCURS edge to `fitness` (weight 0.9) transmits `1.0 × 0.9 × 0.85 = 0.765` to the fitness node.
+  </Step>
+  <Step title="Accumulation across multiple paths">
+    Nodes reachable from multiple seeds accumulate charge from all paths. If `lifestyle` is connected to both `beach_yoga` and `morning_routine`, it accumulates charge from both and is more likely to fire — indicating genuine relevance.
+  </Step>
+  <Step title="Threshold check: fire or decay">
+    After 3 hops, all nodes with accumulated potential ≥ 0.5 are collected as fired nodes. Signals that remain below threshold are discarded. The seeds themselves are excluded from the fired set (they're already in context).
+  </Step>
+  <Step title="Fired nodes injected into candidate set">
+    The fired nodes are appended to the candidate context list with `source: "synaptic"`. They are then subject to the [entropy gating stage](/memory/entropy-gating) for final context budget management.
+  </Step>
+</Steps>
+
+## Example: beach yoga query
+
+```
+Query: "what should I post for my beach yoga session this Saturday?"
+
+RRF seed nodes:
+  → beach_yoga  (activation: 0.91)
+  → outdoor_content  (activation: 0.78)
+  → saturday_scheduling  (activation: 0.71)
+
+Propagation hop 1:
+  beach_yoga  ──[0.90]──→  fitness         potential: 0.765
+  beach_yoga  ──[0.85]──→  lifestyle        potential: 0.723
+  outdoor_content ──[0.88]──→  golden_hour   potential: 0.748
+  saturday_scheduling ──[0.92]──→  weekend_content  potential: 0.782
+
+Propagation hop 2:
+  fitness  ──[0.70]──→  engagement_patterns  potential: 0.454 (below threshold)
+  lifestyle ──[0.80]──→  aspirational_content  potential: 0.489 (below threshold)
+  golden_hour ──[0.95]──→  photography_tips   potential: 0.600 ✓ FIRES
+
+Fired nodes added to context:
+  → fitness, lifestyle, golden_hour, weekend_content, photography_tips
+```
+
+None of those fired nodes were mentioned in the original query. They surface because the taxonomy graph encodes co-occurrence relationships learned from real creator content.
+
+## Hebbian edge reinforcement
+
+Edge weights are not static. When a fired node is actually used in the agent's response — meaning it contributed to a useful answer — `strengthen_edge()` is called to increment the edge weight:
+
+```python
+# memory/retrieval/synaptic/propagation.py
+def strengthen_edge(db_conn, src: str, dst: str, increment: float = 0.1):
+    db_conn.execute(
+        """
+        INSERT INTO edges (src, dst, weight, last_used, count)
+        VALUES (?, ?, ?, ?, 1)
+        ON CONFLICT (src, dst) DO UPDATE SET
+            weight   = MIN(edges.weight + ?, 2.0),
+            last_used = ?,
+            count    = edges.count + 1
+        """,
+        [src, dst, increment, now, increment, now],
+    )
+```
+
+Edge weights cap at `2.0`. The `count` field tracks how many times two nodes have co-fired, providing a signal for future Hebbian consolidation. This is the online (per-session) reinforcement leg — the nightly [Hebbian consolidation cycle](/memory/hebbian-consolidation) handles the offline decay and promotion pass.
+
+## Implementation files
+
+```
+memory/retrieval/synaptic/
+├── propagation.py   ← propagate_from_seeds(), strengthen_edge()
+├── lif_neurons.py   ← LIFNeuronField class, tuning constants
+└── __init__.py      ← exports propagate_from_seeds, strengthen_edge, LIFNeuronField
+```
+
+### Key functions
+
+| Function | File | Description |
+|---|---|---|
+| `propagate_from_seeds(db_conn, seed_node_ids, threshold, top_n)` | `propagation.py` | Run full LIF propagation from seeds; returns top-N fired node dicts |
+| `strengthen_edge(db_conn, src, dst, increment)` | `propagation.py` | Hebbian edge increment; upserts edge with weight + count |
+| `LIFNeuronField.stimulate(seed_ids)` | `lif_neurons.py` | Set seed potentials and trigger propagation |
+| `LIFNeuronField.get_fired_nodes(threshold, exclude_seeds)` | `lif_neurons.py` | Return sorted fired node list |
+
+## Where synaptic propagation fits in the full pipeline
+
+```
+[RRF] top-8 fused nodes → become seed nodes
+    │
+    ▼
+[Synaptic] LIF propagation through taxonomy graph
+    │      edges weighted by Hebbian reinforcement
+    │
+    ▼
+[Entropy gate] full candidate set (seeds + fired) pruned to context budget
+```
+
+<Note>
+  The taxonomy graph used for propagation is `Nodes/Universe/taxonomy_graph.json` — the canonical 3,205-node graph. Per-creator `Nodes/User/` subgraphs feed into this via the nightly [Hebbian consolidation cycle](/memory/hebbian-consolidation), ensuring personal creator patterns influence the universal graph over time.
+</Note>

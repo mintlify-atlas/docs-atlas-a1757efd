@@ -1,0 +1,115 @@
+---
+title: "HyDE retrieval"
+description: "How Hypothetical Document Embeddings bridge the semantic gap between creator queries and indexed documents, dramatically improving retrieval precision."
+---
+
+HyDE (Hypothetical Document Embeddings) is the first stage of GenieHelper's retrieval pipeline. It solves a specific problem: the way a creator phrases a question and the way the relevant documents are written rarely look the same in embedding space.
+
+## The problem HyDE solves
+
+Standard RAG embeds the raw query and looks for the nearest document vectors. This works when the query and the document are phrased similarly. It fails when they're not.
+
+Consider a creator asking:
+
+> "what content works best for Tuesday posts?"
+
+The relevant indexed documents might describe post performance data, engagement metrics by day, or content scheduling analysis — none of which use the phrase "works best for Tuesday posts" directly. The semantic distance between the query embedding and the document embeddings is large enough that straightforward vector search returns poor results.
+
+<Info>
+  This is a widespread RAG failure mode. Queries are short and conversational. Documents are dense and informational. They embed differently even when they're about the same thing.
+</Info>
+
+## How HyDE works
+
+Instead of embedding the raw query, HyDE generates a *hypothetical ideal answer* and embeds that:
+
+<Steps>
+  <Step title="Receive the creator query">
+    The agent receives the raw query: `"what content works best for Tuesday posts?"`
+  </Step>
+  <Step title="Generate a hypothetical ideal document">
+    The agent generates a short hypothetical answer that looks like a real retrieved document — something like:
+
+    > *"Tuesday posts perform best with mid-length video content (30–60s). Fitness and lifestyle topics see 2.1x average engagement versus Sunday. Peak engagement window is 6–9 PM local time. Carousel posts outperform single images by 34% on Tuesdays based on creator analytics.."*
+
+    This hypothetical document doesn't need to be factually accurate — it just needs to look like a real answer would look.
+  </Step>
+  <Step title="Embed the hypothetical document">
+    The embedding model encodes the hypothetical document rather than the original query. The resulting vector sits much closer in embedding space to actual indexed documents about content performance and scheduling patterns.
+  </Step>
+  <Step title="Retrieve against the real index">
+    The hypothetical document embedding is used to query the vector store. Because the hypothetical and the real documents share structural and semantic similarity, retrieval precision improves substantially.
+  </Step>
+  <Step title="Pass to RRF fusion">
+    The dense retrieval hits from HyDE are passed to the [RRF fusion stage](/memory/rrf-fusion) where they are merged with BM25 sparse results.
+  </Step>
+</Steps>
+
+## Why this matters for creator-specific questions
+
+Creator queries are often highly domain-specific. They use platform slang, reference specific content formats, or ask about patterns that only exist in the creator economy context. The indexed documents — analytics reports, platform policy summaries, content performance data — are written in a different register.
+
+HyDE neutralizes this by translating the query *into the same register as the answer before embedding*. The agent acts as its own query rewriter.
+
+<Tip>
+  HyDE is particularly effective for GenieHelper because creators ask conversational questions ("what should I post Sunday?") but the indexed knowledge is structured and analytical ("Sunday engagement peaks at 4pm, driven by lifestyle content, avg. 1.8x weekday CTR"). HyDE bridges that gap without any training data or fine-tuning.
+</Tip>
+
+## Example walkthrough
+
+| Stage | Content |
+|---|---|
+| Original query | `"what content works best for Tuesday posts?"` |
+| Hypothetical document | `"Tuesday content performance: fitness (2.1x), lifestyle (1.8x), peak 6-9 PM. Carousels +34% vs single image. 30-60s video optimal. Avoid text-heavy posts."` |
+| Embedding target | The hypothetical document (not the original query) |
+| Retrieved documents | Actual analytics summaries, scheduling guides, and content performance records that structurally match the hypothetical |
+
+## Implementation location
+
+HyDE is implemented as part of the retrieval pipeline in `memory/retrieval/`. The hypothetical document generation uses the local Ollama LLM (same model as the active agent) so no external API calls are required.
+
+```
+memory/retrieval/
+├── __init__.py          ← exports all public retrieval symbols
+├── rrf/
+│   ├── hybrid_ranker.py ← RRF fusion (consumes HyDE dense hits)
+│   └── bm25_index.py
+├── synaptic/
+│   ├── propagation.py
+│   └── lif_neurons.py
+└── entropy/
+    ├── shannon_filter.py
+    └── context_pruner.py
+```
+
+<Note>
+  HyDE runs entirely on-device via Ollama. No query text or hypothetical document content leaves the server. This preserves the sovereign AI principle: all inference is local, no data reaches external APIs.
+</Note>
+
+## Where HyDE fits in the full pipeline
+
+```
+Creator query
+    │
+    ▼
+[HyDE] Generate hypothetical ideal answer → embed it
+    │
+    ▼
+[Dense] pgvector cosine search with hypothetical embedding
+    │
+    ├──[BM25] Parallel sparse keyword search on raw query
+    │
+    ▼
+[RRF] Merge both ranked lists → top-N candidates
+    │
+    ▼
+[Synaptic] Graph propagation from seed nodes
+    │
+    ▼
+[Entropy gate] Prune to context budget
+    │
+    ▼
+[CRAG] Validate relevance
+```
+
+HyDE feeds the dense retrieval leg. BM25 runs against the original query in parallel — the two are not mutually exclusive, and RRF fusion reconciles them.

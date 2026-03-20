@@ -1,122 +1,134 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "GenieHelper",
+  "theme": "palm",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#7C3AED",
+    "light": "#A78BFA",
+    "dark": "#4C1D95"
   },
-  "favicon": "/favicon.svg",
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/kismetkanceled/geniehelper"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/kismetkanceled/geniehelper"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Overview",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Get Started",
             "pages": [
-              "index",
+              "introduction",
               "quickstart",
-              "development"
+              "pricing"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Platform",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "platform/overview",
+              "platform/stage-ui",
+              "platform/fan-crm",
+              "platform/content-publishing",
+              "platform/media-pipeline",
+              "platform/analytics"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Integrations",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
-            ]
-          },
-          {
-            "group": "AI tools",
-            "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "integrations/onlyfans",
+              "integrations/fansly",
+              "integrations/instagram",
+              "integrations/tiktok"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "AI & Memory",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "AI System",
             "pages": [
-              "api-reference/introduction"
+              "ai/overview",
+              "ai/local-inference",
+              "ai/action-runner",
+              "ai/mcp-tools"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Memory & Retrieval",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "memory/overview",
+              "memory/hyde-retrieval",
+              "memory/rrf-fusion",
+              "memory/synaptic-propagation",
+              "memory/entropy-gating",
+              "memory/hebbian-consolidation"
+            ]
+          },
+          {
+            "group": "Taxonomy",
+            "pages": [
+              "taxonomy/overview",
+              "taxonomy/skill-graph"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "Developer Guide",
+        "groups": [
+          {
+            "group": "Architecture",
+            "pages": [
+              "developer/architecture",
+              "developer/tech-stack",
+              "developer/data-model",
+              "developer/auth"
+            ]
+          },
+          {
+            "group": "MCP Tools",
+            "pages": [
+              "developer/mcp/overview",
+              "developer/mcp/cms-directus",
+              "developer/mcp/ai-ollama",
+              "developer/mcp/web-stagehand",
+              "developer/mcp/media-process",
+              "developer/mcp/taxonomy-core",
+              "developer/mcp/memory-recall"
+            ]
+          },
+          {
+            "group": "API Reference",
+            "pages": [
+              "developer/api/overview",
+              "developer/api/chat",
+              "developer/api/queue",
+              "developer/api/credentials",
+              "developer/api/skills",
+              "developer/api/usage"
+            ]
+          },
+          {
+            "group": "Contributing",
+            "pages": [
+              "developer/contributing",
+              "developer/roadmap"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

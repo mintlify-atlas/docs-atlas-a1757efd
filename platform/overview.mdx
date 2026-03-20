@@ -1,0 +1,87 @@
+---
+title: Platform Overview
+description: GenieHelper is a self-hosted AI business manager for adult content creators. This page covers every major capability area — from fan CRM to media processing — all running on your server, not a cloud platform's.
+---
+
+GenieHelper is not a SaaS product. It runs on a dedicated server you subscribe to, powered by locally-hosted AI models — uncensored, unfiltered, and governed by your rules, not a corporate content policy. Every piece of data your business generates stays on that server: fan relationships, platform credentials, earnings history, media assets.
+
+<Info>
+  GenieHelper runs on IONOS dedicated hardware — Ubuntu 24, 16 GB RAM, 1 TB NVMe. No cloud uploads, no vendor data harvesting, no OpenAI dependency.
+</Info>
+
+## What GenieHelper does
+
+| Capability | What actually happens |
+|---|---|
+| **Multi-platform management** | Connect OnlyFans, Fansly, Instagram, TikTok from one interface — scrape stats, track engagement, manage sessions |
+| **AI content drafting** | Uncensored Ollama models write captions, fan messages, and post concepts in your voice |
+| **Content taxonomy** | A 3,205-node proprietary adult taxonomy classifies every piece of content automatically |
+| **Post scheduling** | AI-suggested calendar with tier-enforced queue limits and BullMQ reliability |
+| **Fan intelligence** | Per-fan CRM with 71 engagement fields, purchase history, message sentiment, and follow-up tasks |
+| **Media pipeline** | Watermarking, teaser clipping, thumbnail generation, and metadata stripping — all local FFmpeg |
+| **HITL scraping** | Human-in-the-loop browser automation for platforms that block headless Chrome |
+| **Private AI chat** | Dolphin 3 8B (Llama 3.1) + Qwen 2.5 running locally — zero OpenAI dependency |
+| **Custom content requests** | Track fan requests from initial ask through negotiation, fulfillment, and payout |
+| **Leak tracing** | Fan-specific steganographic watermarks embedded at delivery — identify the source of any leak |
+| **Fan memory injection** | Durable per-fan facts surface automatically when drafting replies |
+| **Per-fan voice personas** | Each fan gets a customized AI writing style — vocabulary, tone, and formatting specific to that relationship |
+| **Creator persona system** | Define your own voice with lexicon rules, banned phrases, and tone preferences |
+| **Automation triggers** | Rule-based chains fire on fan behavior: win-back, upsell, birthday, re-engagement — all auditable and pausable |
+
+## Capability areas
+
+<CardGroup cols={2}>
+  <Card title="Stage UI" icon="layout-dashboard" href="/platform/stage-ui">
+    The theatrical UI model where the AI drives the interface. Center Stage, Left/Right Wings, The Pit, and the NavRail — assembled by the agent, not the user.
+  </Card>
+  <Card title="Fan CRM" icon="users" href="/platform/fan-crm">
+    71-field fan profiles, cross-platform identity linking, fan memory injection, per-fan AI personas, scoring, and subscription lifecycle tracking.
+  </Card>
+  <Card title="Content & Publishing" icon="pen-line" href="/platform/content-publishing">
+    Idea inbox, post drafts, editorial series, campaign management, scheduling queue, and the creator persona system.
+  </Card>
+  <Card title="Media Pipeline" icon="film" href="/platform/media-pipeline">
+    BullMQ-powered local FFmpeg processing — convert, resize, crop, watermark, clip, compress, and steganographically mark every asset.
+  </Card>
+  <Card title="Analytics" icon="chart-line" href="/platform/analytics">
+    Earnings history, creator goals, platform growth curves, campaign ROI, and live post performance snapshots.
+  </Card>
+  <Card title="Automation & Messaging" icon="zap" href="/platform/fan-crm">
+    Message templates, segment broadcasts, rule-based automation chains, and the HITL approval queue.
+  </Card>
+</CardGroup>
+
+## Subscription tiers
+
+| Tier | Price | Audience |
+|---|---|---|
+| Starter | $0/mo | Try the platform |
+| Creator | $49/mo | Solo creators |
+| Pro | $149/mo | Power users with advanced fan CRM access |
+| Studio | $499/mo | Agencies and multi-account creators |
+
+<Note>
+  Feature availability is enforced at the tier level. The `subscriptionValidator.js` middleware checks quotas against `tier_rate_limits.json` on every API call. The Pro and Studio tiers unlock extended fan CRM access via the Directus Pro Policy.
+</Note>
+
+## Technical foundation
+
+| Layer | Technology |
+|---|---|
+| LLM inference | Ollama — Dolphin3 8B, dolphin-mistral 7B, Qwen 2.5 (CPU-bound, ~4.8 GB pinned) |
+| Agent orchestration | AnythingLLM fork — multi-user, per-workspace isolation |
+| CMS / data layer | Directus 11 — all collections, flows, and extensions |
+| Primary database | PostgreSQL 16 — pgvector (RAG), AGE (graph), supabase_vault (credential encryption) |
+| Job queue | BullMQ + Redis — concurrency 1, sequential execution, 9 core job types |
+| Browser automation | Stagehand (Playwright) — HITL escalation for blocked platforms |
+| Frontend | React 18 + Vite + Tailwind — 20 pages, 17 panels |
+| Agent tools | Unified MCP server — 83 tools across 6 namespaced plugins |
+| Memory | Python + DuckDB — 191 skills, Hebbian decay, RRF retrieval, LIF neurons |
+
+## Data sovereignty
+
+All inference runs locally via Ollama. Nothing leaves the VPS. Platform credentials are encrypted at rest using AES-256-GCM and stored in the PostgreSQL vault extension. Fan data, earnings, and media assets never feed an external training pipeline.
+
+<Warning>
+  GenieHelper is designed for adult content creators and handles sensitive data. All media processing is local. No asset is transmitted to a third-party service during processing.
+</Warning>

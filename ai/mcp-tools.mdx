@@ -1,0 +1,326 @@
+---
+title: MCP Tools
+description: The unified genie-mcp-server — 83 tools across 6 plugin namespaces serving every agent operation in GenieHelper, from Directus CRUD to browser automation to local LLM inference.
+---
+
+All agent tools in GenieHelper are served by a single MCP server: `genie-mcp-server` (`scripts/mcp/genie-mcp-server.mjs`). It runs as a stdio process, spawned at boot by AnythingLLM's `bootMCPServers()` function. There is no per-tool process overhead, no duplicated auth, and no tool name collisions — the plugin loader enforces uniqueness at startup and exits with an error if duplicates are found.
+
+## Architecture
+
+```
+genie-mcp-server (stdio)
+├── lib/pluginLoader.mjs   — scans storage/plugins/, validates manifests
+├── lib/services.mjs       — shared fetch clients for Directus, Ollama, Stagehand
+│
+├── cms.directus    (55 tools)
+├── ai.ollama       (3 tools)
+├── web.stagehand   (9 tools)
+├── media.process   (5 tools)
+├── taxonomy.core   (7 tools)
+└── memory.recall   (4 tools)
+                    ───────────
+                    83 tools total
+```
+
+## Boot sequence
+
+<Steps>
+  <Step title="AnythingLLM server starts">
+    PM2 starts the `anything-llm` process (`server/`). The boot sequence runs `server/utils/boot/index.js`.
+  </Step>
+  <Step title="bootMCPServers() is called">
+    `bootMCPServers()` reads `storage/plugins/anythingllm_mcp_servers.json` and spawns each registered MCP server as a child process.
+  </Step>
+  <Step title="genie-mcp-server starts">
+    The single `genie` entry spawns `genie-mcp-server.mjs`. The plugin loader scans `storage/plugins/` for directories containing both `plugin.json` and `handler.mjs`.
+  </Step>
+  <Step title="Plugins load and register tools">
+    Each plugin's `createTools(services)` function is called. The loader registers all returned `ToolDef` objects. Duplicate tool names cause `process.exit(1)`.
+  </Step>
+</Steps>
+
+### Boot config
+
+The MCP server registration lives in `storage/plugins/anythingllm_mcp_servers.json`:
+
+```json
+{
+  "mcpServers": {
+    "genie": {
+      "command": "node",
+      "args": ["/path/to/scripts/mcp/genie-mcp-server.mjs"],
+      "env": {
+        "PLUGINS_DIR": "/path/to/storage/plugins",
+        "MCP_SERVICE_TOKEN": "...",
+        "DIRECTUS_URL": "http://127.0.0.1:8055",
+        "OLLAMA_URL": "http://127.0.0.1:11434",
+        "STAGEHAND_URL": "http://127.0.0.1:3002"
+      }
+    }
+  }
+}
+```
+
+## The MCP write constraint
+
+<Warning>
+  **All Directus writes from server code must go through `cms.directus` MCP tools.** No raw `fetch()` calls to Directus are permitted in business logic. This is a hard architectural rule enforced by code review.
+
+  The only exceptions are `register.js` and `rbacSync.js` — both run pre-auth and require the `DIRECTUS_ADMIN_TOKEN` directly.
+</Warning>
+
+This constraint exists to maintain a single audit path for all data mutations. Every write goes through the MCP layer, which means every write is logged, rate-limited, and consistently authenticated via `MCP_SERVICE_TOKEN`.
+
+## Plugin reference
+
+### cms.directus — 55 tools
+
+Full Directus 11 API coverage: items CRUD, users, files, flows, fields, relations, roles, policies, permissions, settings, server info, activity log, revision history, and schema management.
+
+**Auth:** `MCP_SERVICE_TOKEN` Bearer · **Base:** `http://127.0.0.1:8055`
+
+<AccordionGroup>
+  <Accordion title="Items (7 tools)">
+    | Tool | Description |
+    |---|---|
+    | `list-collections` | List all custom Directus collections |
+    | `get-collection-schema` | Get field schema for a collection |
+    | `read-items` | Read items with filter, sort, pagination, field projection |
+    | `read-item` | Read a single item by UUID |
+    | `create-item` | Create a new item (tier-gates `media_jobs` writes) |
+    | `update-item` | PATCH update a single item |
+    | `delete-item` | DELETE a single item |
+    | `search-items` | Full-text search across a collection |
+  </Accordion>
+
+  <Accordion title="Users (7 tools)">
+    | Tool | Description |
+    |---|---|
+    | `get-me` | Get current MCP service account profile |
+    | `list-users` | List users with filter and field projection |
+    | `get-user` | Get single user by UUID |
+    | `create-user` | Create a new Directus user |
+    | `update-user` | PATCH update a user |
+    | `delete-user` | Delete a user |
+    | `invite-user` | Invite a user by email |
+  </Accordion>
+
+  <Accordion title="Files (3 tools)">
+    | Tool | Description |
+    |---|---|
+    | `list-files` | List Directus file assets |
+    | `get-file` | Get file metadata and asset URL |
+    | `delete-file` | Delete a file asset |
+    | `import-file` | Import a file from a URL |
+  </Accordion>
+
+  <Accordion title="Flows and operations (6 tools)">
+    | Tool | Description |
+    |---|---|
+    | `list-flows` | List all Directus Flows |
+    | `trigger-flow` | POST to a Flow's webhook trigger by UUID |
+    | `create-flow` | Create a new Flow definition |
+    | `update-flow` | Update an existing Flow |
+    | `delete-flow` | Delete a Flow |
+    | `list-operations` | List all operations within a flow |
+    | `create-operation` | Create a new operation in a flow |
+  </Accordion>
+
+  <Accordion title="Schema — fields, relations, collections (10 tools)">
+    | Tool | Description |
+    |---|---|
+    | `list-fields` | List fields for a collection |
+    | `create-field` | Create a new field |
+    | `update-field` | Update field metadata |
+    | `delete-field` | Delete a field |
+    | `list-relations` | List all relations |
+    | `create-relation` | Create a relation |
+    | `delete-relation` | Delete a relation |
+    | `create-collection` | Create a new collection |
+    | `delete-collection` | Delete a collection |
+    | `get-schema-snapshot` | Export full schema JSON |
+    | `diff-schema` | Diff a schema against current state |
+    | `apply-schema` | Apply a schema diff |
+  </Accordion>
+
+  <Accordion title="Roles, policies, permissions (10 tools)">
+    | Tool | Description |
+    |---|---|
+    | `list-roles` | List all roles |
+    | `get-role` | Get role by UUID |
+    | `create-role` | Create a new role |
+    | `update-role` | Update a role |
+    | `delete-role` | Delete a role |
+    | `list-policies` | List all access policies |
+    | `get-policy` | Get a policy by UUID |
+    | `list-permissions` | List all permission rules |
+    | `create-permission` | Create a permission rule |
+    | `update-permission` | Update a permission rule |
+    | `delete-permission` | Delete a permission rule |
+  </Accordion>
+
+  <Accordion title="Settings, server, audit (6 tools)">
+    | Tool | Description |
+    |---|---|
+    | `get-settings` | Get global Directus settings |
+    | `update-settings` | Update global settings |
+    | `server-health` | Server health check |
+    | `server-info` | Server version and info |
+    | `list-activity` | List the audit activity log |
+    | `list-revisions` | List item revision history |
+  </Accordion>
+</AccordionGroup>
+
+---
+
+### ai.ollama — 3 tools
+
+Direct access to local Ollama inference. **Base:** `http://127.0.0.1:11434` · **Default model:** `OLLAMA_MODEL` env (fallback: `qwen-2.5:latest`)
+
+| Tool | Description |
+|---|---|
+| `list-models` | List locally available Ollama models |
+| `generate` | Single-turn completion — prompt, system, temperature, max_tokens |
+| `chat` | Multi-turn chat — messages JSON array, system prompt, temperature |
+
+<Tip>
+  Use `generate` for single-shot tasks (caption drafting, JSON extraction). Use `chat` when you need to maintain a message history across turns (multi-step reasoning, iterative refinement).
+</Tip>
+
+---
+
+### web.stagehand — 9 tools
+
+Playwright-based browser automation via the Stagehand server. **Base:** `http://127.0.0.1:3002` · **Model:** `STAGEHAND_MODEL` env (fallback: `ollama/qwen-2.5`)
+
+<Note>
+  All tools except `start-session` require a `session_id` returned by `start-session`. Sessions are stateful — navigate, act, and extract all operate on the same browser context.
+</Note>
+
+| Tool | Description |
+|---|---|
+| `start-session` | Launch a headless browser. Returns `session_id`. |
+| `navigate` | Navigate to a URL |
+| `act` | Natural language browser action (click, type, scroll, select) |
+| `extract` | Extract structured data from the current page |
+| `observe` | List interactive elements on the current page |
+| `screenshot` | Take a screenshot of the current page |
+| `get-cookies` | Get all cookies from the session |
+| `set-cookies` | Inject cookies (platform session rehydration) |
+| `close-session` | End and clean up the browser session |
+
+The `set-cookies` / `get-cookies` pair is the mechanism for platform session rehydration — creators authenticate once via HITL, cookies are encrypted and stored in `platform_sessions`, then injected into future headless sessions automatically.
+
+---
+
+### media.process — 5 tools
+
+Async media processing via FFmpeg and ImageMagick. Tools that create jobs write a record to `media_jobs` in Directus; the `media-worker` BullMQ consumer processes them.
+
+**Auth:** via `MCP_SERVICE_TOKEN` (Directus) · **Async pattern:** create job → poll `media.job-status`
+
+| Tool | Mode | Description |
+|---|---|---|
+| `media.validate` | sync | Run ffprobe on a Directus file — returns format, duration, resolution, bitrate, optional platform compliance check |
+| `media.watermark` | async | Overlay watermark onto media → `{ job_id }` |
+| `media.clip` | async | FFmpeg clip / transcode video → `{ job_id }` |
+| `media.thumbnail` | async | Resize / convert image → `{ job_id }` |
+| `media.job-status` | sync | Poll `media_jobs` by job_id — returns status and output `file_id` |
+
+Platform specs supported by `media.validate`: `onlyfans` · `fansly` · `instagram_feed` · `instagram_story` · `tiktok`
+
+```
+Typical async flow:
+  media.watermark({ file_id, ... })
+    → creates media_jobs record, returns { job_id }
+  media-worker (polls every 1500ms)
+    → picks up job, executes FFmpeg
+    → updates media_jobs status to "done"
+  media.job-status({ job_id })
+    → returns { status: "done", outputs: [{ file_id }] }
+```
+
+---
+
+### taxonomy.core — 7 tools
+
+The 3,205-node adult content taxonomy graph. Graph source: `Nodes/Universe/taxonomy_graph.json` · Cached in module scope after first load.
+
+| Tool | Description |
+|---|---|
+| `taxonomy.search` | Search graph by label token — ranked by match quality and usage count. Compound tags are indexed both as full terms and tokens: `big-ass` is found by `"ass"` or `"big"`. |
+| `taxonomy.tag-content` | LLM-assisted tagging: Ollama → validate against graph → primary/secondary/tertiary buckets. Output normalized: `"big ass"` → `"big-ass"`. |
+| `taxonomy.map-term` | Map an arbitrary term to its canonical graph node |
+| `taxonomy.ingest-source` | Ingest a new content source into the taxonomy pipeline |
+| `taxonomy.rebuild-graph` | Rebuild the full taxonomy graph from source data |
+| `taxonomy.prune` | Remove low-weight or orphaned nodes |
+| `taxonomy.strengthen` | Reinforce a node's weight based on an engagement signal |
+
+<Note>
+  `taxonomy.tag-content` is the hot path for content classification. It calls Ollama internally to suggest tags, then validates each suggestion against the graph before accepting it. This prevents hallucinated tags that don't exist in the taxonomy.
+</Note>
+
+---
+
+### memory.recall — 4 tools
+
+The JIT skill hydration interface to the DuckDB skill graph (`memory/core/agent_memory.duckdb`). 191 skills · 252 nodes · 12,880+ edges.
+
+| Tool | Description |
+|---|---|
+| `activate_skills` | Run stimulus propagation from a task description — returns top-N relevant skill keys |
+| `get_skill` | Fetch the full content of a skill by key |
+| `find_skills` | Search skills by keyword or category |
+| `get_correlations` | Get skills that frequently co-activate with a given skill |
+
+```javascript
+// Typical session start sequence
+const skills = await mcp.call('activate_skills', {
+  task: 'scrape OnlyFans stats and draft a post',
+  top_n: 8
+});
+
+for (const skillKey of skills) {
+  const skill = await mcp.call('get_skill', { key: skillKey });
+  // Inject skill content into agent system prompt
+}
+```
+
+---
+
+## Plugin convention
+
+All plugins follow a consistent structure under `storage/plugins/`:
+
+```
+storage/plugins/{plugin-name}/
+├── plugin.json    # Manifest: id, name, version, kind, dependencies, config
+└── handler.mjs    # ESM. Exports createTools(services) → Array<ToolDef>
+```
+
+The `services` object passed to `createTools` provides pre-configured fetch clients:
+
+```javascript
+// lib/services.mjs — passed to every plugin handler
+{
+  directus: { fetch, baseUrl },  // authenticated with MCP_SERVICE_TOKEN
+  ollama:   { fetch, baseUrl },  // http://127.0.0.1:11434
+  stagehand: { fetch, baseUrl }, // http://127.0.0.1:3002
+}
+```
+
+<Warning>
+  Plugin directories that contain only `handler.js` (CommonJS) are skipped by the loader. MCP plugins must use `handler.mjs` (ESM). The `handler.js` convention is reserved for AnythingLLM agent skills, which load via a separate pipeline.
+</Warning>
+
+## Environment variables
+
+| Variable | Default | Used by |
+|---|---|---|
+| `DIRECTUS_URL` | `http://127.0.0.1:8055` | `services.mjs` |
+| `MCP_SERVICE_TOKEN` | — (required) | `services.mjs` — Directus auth |
+| `OLLAMA_URL` | `http://127.0.0.1:11434` | `services.mjs` |
+| `OLLAMA_MODEL` | `qwen-2.5:latest` | `ai-ollama` plugin |
+| `STAGEHAND_URL` | `http://127.0.0.1:3002` | `services.mjs` |
+| `STAGEHAND_MODEL` | `ollama/qwen-2.5` | `web-stagehand` plugin |
+| `PLUGINS_DIR` | `storage/plugins` | `pluginLoader.mjs` |

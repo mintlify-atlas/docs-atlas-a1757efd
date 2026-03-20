@@ -1,0 +1,208 @@
+---
+title: "Stream Chat"
+description: "POST /api/genie/stream-chat — send a message to the Genie agent and receive a Server-Sent Events stream."
+---
+
+## POST /api/genie/stream-chat
+
+Sends a message to the Genie agent and receives a real-time SSE response stream. The endpoint proxies through the AnythingLLM workspace `stream-chat` API, which runs the full agent pipeline including all MCP tools (Directus, Ollama, Stagehand, media processing, taxonomy).
+
+<Info>
+  Admin users with `admin_access=true` are routed to the Claude API (Anthropic) instead of the local Ollama stack. This is the PowerAdmin bypass — for platform administrators, not for regular creators.
+</Info>
+
+## Request
+
+```http
+POST /api/genie/stream-chat
+Authorization: Bearer <directus_jwt>
+Content-Type: application/json
+```
+
+### Body
+
+<ParamField body="message" type="string" required>
+  The message to send to the agent. Cannot be empty or whitespace-only.
+</ParamField>
+
+<ParamField body="sessionId" type="string">
+  Optional session identifier for conversation continuity. If omitted, the server generates one scoped to the authenticated user: `genie-{userId}`. Providing the same `sessionId` across requests preserves conversation history in the AnythingLLM workspace thread.
+</ParamField>
+
+```json
+{
+  "message": "Write a caption for my new photo set",
+  "sessionId": "genie-abc123"
+}
+```
+
+## Response
+
+The response is an **SSE stream** (`Content-Type: text/event-stream`). The connection stays open until the full response is delivered, then closes. Each SSE event is a JSON-encoded payload on a `data:` line.
+
+```http
+HTTP/1.1 200 OK
+Content-Type: text/event-stream
+Cache-Control: no-cache
+Connection: keep-alive
+X-Accel-Buffering: no
+```
+
+### Event types
+
+| `type` field | When emitted | Purpose |
+|-------------|-------------|--------|
+| `textResponseChunk` | During streaming | Incremental text from the LLM |
+| `textResponse` | Single-shot (gate blocked) | Full response when onboarding is incomplete |
+| `stage_update` | During agent reasoning | UI stage state update (see below) |
+| `finalizeResponseStream` | End of stream | Signals the client to close the connection |
+
+### textResponseChunk
+
+Emitted once per token or chunk as the LLM generates text.
+
+```json
+{
+  "type": "textResponseChunk",
+  "textResponse": "Here's a caption for your new",
+  "close": false,
+  "error": false
+}
+```
+
+### finalizeResponseStream
+
+Always the last event. The client should close the connection after receiving this.
+
+```json
+{
+  "type": "finalizeResponseStream",
+  "textResponse": "",
+  "close": true,
+  "error": false
+}
+```
+
+### stage_update
+
+Stage update events are emitted when the agent transitions between reasoning stages. They drive the Stage UI (`GenieHelperStageLayout`) in the dashboard.
+
+```json
+{
+  "type": "stage_update",
+  "missionLabel": "Drafting caption...",
+  "mood": "focused",
+  "leftPanel": "skill_context",
+  "rightPanel": "output_preview",
+  "stageTarget": "caption_generator"
+}
+```
+
+<ResponseField name="missionLabel" type="string">
+  Human-readable label for the current agent task, rendered in the top status rail.
+</ResponseField>
+
+<ResponseField name="mood" type="string">
+  Agent mood state. Affects the visual tone of the Stage UI. Values include `focused`, `thinking`, `idle`, `error`.
+</ResponseField>
+
+<ResponseField name="leftPanel" type="string">
+  Which content module to display in the Stage left panel.
+</ResponseField>
+
+<ResponseField name="rightPanel" type="string">
+  Which content module to display in the Stage right panel.
+</ResponseField>
+
+<ResponseField name="stageTarget" type="string">
+  The active skill or tool the agent is currently invoking.
+</ResponseField>
+
+## Content gate
+
+Before the agent runs, the endpoint checks the user's onboarding state via `nodeRag.getOnboardingState()`. If onboarding is not complete, the stream returns a single blocked message instead of forwarding to the workspace.
+
+```json
+{
+  "type": "textResponse",
+  "textResponse": "Before I can generate content for you, I need to learn how you operate...",
+  "close": true,
+  "error": false
+}
+```
+
+The gate resolves based on `phase` in the user's onboarding record:
+
+| Phase | Gate message |
+|-------|-------------|
+| `EXTENSION_INSTALL`, `DATA_COLLECTION` | Directs user to the Setup tab to complete onboarding |
+| `PROCESSING` | Reports data ingestion progress: `sources_ingested / sources_required` |
+| `COMPLETE` | Gate lifted — agent runs normally |
+
+## JIT skill hydration
+
+Before forwarding the message to the AnythingLLM workspace, the server injects two pieces of context:
+
+1. **Node RAG context** — `nodeRag.getNodeContext()` fetches the top-15 weighted persona nodes for the user from the `user_nodes` collection (5-minute TTL cache). This gives the agent the user's voice, platform stats, and behavioral patterns without repeating them in every prompt.
+
+2. **Secure identity context** — a `[SECURE_CONTEXT]` block is prepended with the user's `directus_user_id`. All MCP tool calls that accept a `user_id` parameter must use this value. This prevents the LLM from fabricating or substituting a different user identity.
+
+```
+[SECURE_CONTEXT]
+directus_user_id: 7f3b2c1a-...
+directus_email: creator@example.com
+You MUST use directus_user_id as the user_id in ALL MCP tool calls...
+[/SECURE_CONTEXT]
+
+<top-15 persona nodes from user_nodes collection>
+
+---
+
+<original user message>
+```
+
+<Note>
+  JIT skill hydration via `surgical_context.py` runs at request time. The agent always operates with fresh persona context — there is no stale skill state.
+</Note>
+
+## ACTION tag interception
+
+The LLM's response is scanned for `[ACTION:slug:{"params"}]` tags. When detected, the Action Runner (`server/utils/actionRunner/`) intercepts the tag and dispatches the corresponding flow deterministically — bypassing LLM tool-calling limitations.
+
+```
+[ACTION:post-create:{"title":"New photo set","platform":"onlyfans"}]
+```
+
+The six seeded Action Runner flows are:
+
+| Slug | Purpose |
+|------|---------|
+| `scout-analyze` | Scout and analyze platform profile data |
+| `taxonomy-tag` | Tag content using the DuckDB taxonomy graph |
+| `post-create` | Create and queue a scheduled post |
+| `message-generate` | Generate a fan message response |
+| `memory-recall` | Retrieve relevant memory nodes |
+| `media-process` | Trigger a media processing job |
+
+## PowerAdmin bypass
+
+When the authenticated user has `admin_access=true` in Directus **and** `ANTHROPIC_API_KEY` is set in the server environment, the request is routed directly to the Claude API instead of the AnythingLLM + Ollama stack.
+
+In this mode:
+- The response is streamed using the same SSE event format (`textResponseChunk` + `finalizeResponseStream`)
+- The system prompt is the PowerAdmin prompt (full platform architecture context)
+- Conversation history is maintained across turns within the same session
+- The `X-Genie-Backend: claude` response header signals to the frontend which backend is active
+- Max tokens: 8192
+
+<Warning>
+  The PowerAdmin bypass is for platform administrators only. Regular creator accounts always route to the local Ollama models, regardless of any `admin_access` attempts. The check is performed server-side against the validated Directus JWT.
+</Warning>
+
+## Error responses
+
+| Status | Body | Cause |
+|--------|------|-------|
+| `400` | `{ "error": "message required" }` | Empty or missing `message` field |
+| `401` | `{ "error": "Unauthorized" }` | Missing or invalid Directus JWT |
+| `503` | `{ "error": "Account setup incomplete..." }` | User has no `anythingllm_user_id` — workspace provisioning failed |

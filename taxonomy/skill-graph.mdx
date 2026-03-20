@@ -1,0 +1,246 @@
+---
+title: "JIT skill graph"
+description: "How GenieHelper surfaces the right procedural skills for each task using stimulus propagation across a DuckDB graph — without preloading everything into the context window."
+---
+
+Most AI systems that use procedural skills preload all of them into the agent's context window at session start. This is expensive, noisy, and scales badly as the skill library grows.
+
+GenieHelper takes a different approach: **Just-In-Time (JIT) skill hydration**. At session start, the system analyzes the incoming task, runs stimulus propagation across the DuckDB skill graph, and surfaces only the top-N most relevant skills for that specific task. Irrelevant skills never touch the context window.
+
+The result is a leaner, faster agent that gets better over time as skills accrete.
+
+## The skill graph at a glance
+
+<CardGroup cols={2}>
+  <Card title="191 skills" icon="book-open">
+    Procedural skills covering everything from platform scraping to fan message drafting — all stored as `.md` files with YAML frontmatter.
+  </Card>
+  <Card title="252 nodes" icon="circle-nodes">
+    Skill nodes plus category nodes, plus cross-category correlation nodes. The graph has more nodes than skills because categories and correlation anchors are nodes too.
+  </Card>
+  <Card title="12,880+ edges" icon="share-nodes">
+    Weighted edges between skills, categories, and correlation nodes — seeded from co-occurrence data and reinforced by Hebbian decay.
+  </Card>
+  <Card title="DuckDB backend" icon="database">
+    The skill graph lives in `memory/core/agent_memory.duckdb`. Fast, local, no server process required.
+  </Card>
+</CardGroup>
+
+## Skill categories
+
+Skills are organized into 11 categories. The first 10 cover general development and infrastructure domains. Category 11 — `11-genie-user-skills` — contains the platform-specific skills that power the GenieHelper agent's day-to-day work:
+
+<AccordionGroup>
+  <Accordion title="01 · Content scraping">
+    Skills for pulling data from OnlyFans, Fansly, and other platforms. Covers `scrape-platform-content`, `capture-platform-cookies`, and `check-scrape-status`. These are the skills the agent hydrates when a creator asks to pull their stats or sync their subscriber list.
+  </Accordion>
+  <Accordion title="02 · Media management">
+    Upload, process, search, and download media assets. Covers the FFmpeg pipeline, watermarking jobs, teaser clip creation, and thumbnail generation. Hydrated when the agent handles media ingest or processing requests.
+  </Accordion>
+  <Accordion title="03 · Publishing">
+    Schedule posts, publish immediately, generate captions, and surface content ideas. Covers the full editorial pipeline from `suggest-ideas` through `publish-post-now`. The most frequently hydrated category for content-focused sessions.
+  </Accordion>
+  <Accordion title="04 · Platform connect">
+    Connect, verify, and disconnect platform accounts. Handles the authentication and session management flow for OnlyFans, Fansly, Instagram, and TikTok — including HITL escalation when platforms block headless automation.
+  </Accordion>
+  <Accordion title="05 · Creator profile">
+    Create and update creator personas, manage subscription tier changes, and configure writing voice rules. Hydrated during onboarding and when a creator updates their identity configuration.
+  </Accordion>
+  <Accordion title="06 · Analytics">
+    Analyze fan insights, generate analytics reports, and run taxonomy classification on historical content. Covers the full reporting surface from per-fan scoring to platform-level growth curves.
+  </Accordion>
+  <Accordion title="07 · User settings">
+    Configure user preferences — notification rules, automation defaults, tier limits. Hydrated when a creator adjusts their platform configuration.
+  </Accordion>
+  <Accordion title="08 · Communication">
+    Skills for fan messaging, template management, and broadcast campaigns. Includes `learn-user-typos` — a skill that trains the agent on a creator's specific writing style quirks so AI-drafted messages match their voice.
+  </Accordion>
+</AccordionGroup>
+
+<Note>
+  Categories `01-10` (generic development and infrastructure skills) were purged on 2026-03-14. The canonical platform skills now live exclusively in `agent-skills/11-genie-user-skills/`. If you're ingesting into DuckDB after a purge, run with `--reset`: `python3 memory/core/ingest_skills.py --reset`
+</Note>
+
+## How JIT hydration works
+
+At session start — specifically when a chat request hits `/api/genie/stream-chat` — the server runs `surgical_context.py` before invoking the LLM:
+
+```
+Creator sends: "draft a caption for my new beach yoga set"
+
+→ surgical_context.py activate "draft caption beach yoga"
+  → embed task query
+    → stimulus propagation across agent_memory.duckdb
+      → skill nodes activated: [publishing:generate-caption, analytics:classify-taxonomy]
+      → category correlations: [03-publishing, 06-analytics]
+      → top-N skills selected by activation strength
+        → skill content fetched from agent-skills/
+          → injected into agent context window
+            → LLM runs with only relevant procedural context
+```
+
+Skills that are not relevant to the task — scraping skills, platform connection skills, settings skills — consume zero context window budget.
+
+<Tip>
+  The `activate` command uses the same stimulus propagation mechanism as the taxonomy graph. The DuckDB skill graph and the taxonomy graph in `Nodes/Universe/` are separate stores that share the same propagation architecture.
+</Tip>
+
+## surgical_context.py commands
+
+The `surgical_context.py` script is the CLI interface to the skill graph. It is called programmatically by the server at session start, but you can also run it directly:
+
+```bash
+# Surface top skills for a task
+python3 memory/core/surgical_context.py activate "<task description>"
+
+# Get full content for a specific skill
+python3 memory/core/surgical_context.py get_skill <skill-name>
+
+# Find skills by tag
+python3 memory/core/surgical_context.py find_skills <tag1,tag2>
+
+# Get Hebbian correlation neighbors for a skill
+python3 memory/core/surgical_context.py get_correlations <skill-name>
+
+# List all skills in a category
+python3 memory/core/surgical_context.py list_category <category>
+
+# Graph statistics
+python3 memory/core/surgical_context.py stats
+```
+
+## memory.recall MCP plugin
+
+The `memory.recall` MCP plugin exposes the skill graph to the LLM agent as a set of 4 tools. These are served by the unified `genie-mcp-server` (part of the 83-tool bundle):
+
+<CardGroup cols={2}>
+  <Card title="activate_skills" icon="zap">
+    The primary tool. Takes a task description string and returns the top-N most relevant skills via stimulus propagation. This is what `surgical_context.py activate` calls under the hood.
+  </Card>
+  <Card title="get_skill" icon="book">
+    Retrieves the full content of a named skill from `agent-skills/`. Returns the skill's YAML frontmatter, description, steps, and any tool-call examples.
+  </Card>
+  <Card title="find_skills" icon="magnifying-glass">
+    Tag-based skill search. Returns all skills matching one or more comma-separated tags — useful when the agent knows what kind of skill it needs but not the exact name.
+  </Card>
+  <Card title="get_correlations" icon="share-nodes">
+    Returns the Hebbian correlation neighbors of a named skill — other skills that are frequently activated together with it. Useful for surfacing related context the agent might not have explicitly requested.
+  </Card>
+</CardGroup>
+
+## The DuckDB schema
+
+The skill graph is stored in `memory/core/agent_memory.duckdb`. The schema is maintained by `ingest_skills.py` and `seed_linkages.sql`:
+
+```sql
+-- Core tables (simplified)
+skills        -- 191 rows: name, category, tags, description, file_path
+nodes         -- 252 rows: id, label, type (skill | category | correlation)
+edges         -- 12,880+ rows: source, target, weight, type
+linkages      -- Hebbian correlation pairs seeded from co-occurrence data
+```
+
+The ETL pipeline:
+
+<AccordionGroup>
+  <Accordion title="Ingest: agent-skills/ → DuckDB">
+    `python3 memory/core/ingest_skills.py` reads every `.md` file in `agent-skills/11-genie-user-skills/`, parses the YAML frontmatter (name, category, tags, description), and writes skill records into the `skills` table. Nodes and initial edges are derived from the category hierarchy.
+
+    After ingest, run the hierarchical goosehints generator to update directory-level context files:
+    ```bash
+    python3 memory/core/generate_hierarchical_goosehints.py
+    ```
+  </Accordion>
+  <Accordion title="Seed linkages: Hebbian correlation edges">
+    `duckdb memory/core/agent_memory.duckdb < memory/core/seed_linkages.sql` populates the initial Hebbian correlation edges. These are co-occurrence pairs derived from session data — skills that tend to be useful together get a weighted edge between them.
+  </Accordion>
+  <Accordion title="Sync to Directus">
+    `python3 scripts/directus/ingest-skills-to-directus.py` mirrors the skill records to the `agent_skills` Directus collection. This makes skills queryable via the CMS API and available to the `cms.directus` MCP plugin.
+
+    For a full reset and re-ingest:
+    ```bash
+    python3 scripts/directus/ingest-skills-to-directus.py --reset
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## How this differs from preloaded skills
+
+The distinction matters for understanding how the system scales:
+
+| Preloaded skills | JIT skill hydration |
+|---|---|
+| All skills injected at session start | Only relevant skills injected |
+| Context window cost is constant and grows with every new skill | Context window cost scales with task complexity, not library size |
+| Adding skills makes the agent slower and more expensive | Adding skills has no cost unless they are relevant to the task |
+| Skill relevance depends on prompt engineering | Skill relevance is computed via graph propagation |
+| Skills do not reinforce each other | Frequently co-activated skills develop stronger edges — the graph learns |
+
+<Info>
+  The key insight: because relevance is computed at query time rather than at system design time, you can add skills freely without degrading performance. The graph handles routing.
+</Info>
+
+## Automatic skill creation (in progress)
+
+When the agent handles a request type it has not seen before — a new platform API change, an edge case in the media pipeline, a novel fan communication pattern — new skills can be drafted automatically:
+
+1. The agent encounters a request it cannot fully resolve with existing skills
+2. A new skill is drafted to `agent-skills/11-genie-user-skills/` in the 3-layer `.md` format
+3. `ingest_skills.py` ingests the new skill into DuckDB
+4. The skill becomes retrievable on future sessions via `activate_skills`
+5. If the skill is activated frequently enough, Hebbian reinforcement strengthens its edges
+
+<Warning>
+  Automatic skill creation is currently in progress and not yet fully wired. New skills are drafted but the automated ingest and DuckDB promotion pipeline is a pending sprint item. Skills created manually via the `.md` format are immediately available after running `ingest_skills.py`.
+</Warning>
+
+This is the mechanism by which GenieHelper accretes procedural memory. The system does not need to be retrained — it reads new skill files and incorporates them into the graph. Knowledge compounds without manual curation.
+
+## Adding a skill manually
+
+Skills use a 3-layer `.md` format with YAML frontmatter:
+
+```markdown
+---
+name: my-new-skill
+category: 11-genie-user-skills/03-publishing
+tags: [caption, tone, persona]
+description: Drafts a caption in the creator's configured voice persona.
+---
+
+## Context
+When to use this skill and what it does.
+
+## Steps
+1. Retrieve the creator's persona from `creator_personas` via `cms.directus`
+2. Load lexicon rules from `persona_lexicon_rules`
+3. Call `ai.ollama generate` with the persona system prompt
+4. Return the draft caption for human review
+
+## Tool calls
+- `cms.directus`: read `creator_personas`, `persona_lexicon_rules`
+- `ai.ollama`: generate
+```
+
+After saving the file, re-ingest:
+
+```bash
+python3 memory/core/ingest_skills.py
+```
+
+## Related
+
+<CardGroup cols={2}>
+  <Card title="Taxonomy system overview" icon="circle-nodes" href="/taxonomy/overview">
+    The 3,205-node content taxonomy and how it connects to retrieval
+  </Card>
+  <Card title="Synaptic propagation" icon="brain" href="/memory/synaptic-propagation">
+    The LIF neuron model used by both the taxonomy and skill graph
+  </Card>
+  <Card title="Hebbian consolidation" icon="moon" href="/memory/hebbian-consolidation">
+    Nightly edge weight decay and the cross-user pattern promotion pipeline
+  </Card>
+  <Card title="memory.recall MCP plugin" icon="tool" href="/developer/mcp/memory-recall">
+    Full reference for activate_skills, get_skill, find_skills, get_correlations
+  </Card>
+</CardGroup>

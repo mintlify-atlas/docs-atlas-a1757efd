@@ -1,0 +1,180 @@
+---
+title: "Entropy gating"
+description: "How Shannon entropy scoring prunes the candidate context set to fit within the 16GB RAM / context window budget, and how CRAG validates retrieved context before injection."
+---
+
+Entropy gating is the fifth stage of GenieHelper's retrieval pipeline. After synaptic propagation expands the candidate node set, entropy gating trims it down to what actually fits in the agent's context window — prioritizing high-information chunks and evicting redundant boilerplate.
+
+## The problem: context windows are budget-constrained
+
+GenieHelper runs on a 16GB RAM server. The inference model (Qwen 2.5 7B / Dolphin 3 8B) pins roughly 4.8GB of RAM. The remaining headroom is shared across active sessions, BullMQ job queues, Directus, PostgreSQL, and Redis.
+
+This means context windows are not infinitely expandable. Injecting everything the retrieval pipeline surfaces would push RAM usage into swap or cause OOM. More importantly, bloating the context window with low-value chunks degrades LLM output quality — a well-documented failure mode known as [\"Lost in the Middle\"](https://arxiv.org/abs/2307.03172), where relevant content buried in a large context gets ignored by the model.
+
+<Warning>
+  The 16GB RAM ceiling is a hard constraint. All memory allocation planning in GenieHelper respects it. Context window budget enforcement is not optional — it directly affects server stability.
+</Warning>
+
+## How Shannon entropy scoring works
+
+Shannon entropy measures information density. Applied to text, it answers: *how much unique information does this chunk contain?*
+
+Character-level entropy:
+
+```
+H = -Σ p(c) × log₂ p(c)
+```
+
+Where `p(c)` is the probability of each unique character in the text. Range: 0 (single repeated character) to ~5.5+ (dense, varied data like payout formulas or platform-specific rules).
+
+Token-level entropy (semantic richness):
+
+Tokens are normalized words. High token entropy means many unique tokens — indicating varied, specific content rather than repetitive prose.
+
+GenieHelper uses a weighted blend:
+
+```python
+# memory/retrieval/entropy/shannon_filter.py
+def score_chunk(chunk: Dict) -> float:
+    char_h  = calculate_shannon_entropy(content)   # character-level
+    token_h = calculate_token_entropy(content)     # token-level
+
+    # Normalize: char entropy maxes ~5.5, token entropy maxes ~6+
+    char_norm  = min(char_h  / 5.5, 1.0)
+    token_norm = min(token_h / 6.0, 1.0)
+
+    return round(0.6 * token_norm + 0.4 * char_norm, 4)
+```
+
+The 60/40 blend weights semantic richness (token entropy) slightly higher than raw character density, because repetitive-but-varied prose scores high on character entropy without adding useful information.
+
+## Entropy benchmarks
+
+<AccordionGroup>
+  <Accordion title="What gets a high entropy score?">
+    High-entropy content (score ≥ 0.65) contains unique, specific data:
+
+    - Platform payout rate tables (`"Slushy: 80% net, weekly, min $25, holds: 14 days"`)
+    - Creator-specific scheduling rules (`"Post yoga content Tue/Thu 6-8 PM — peak engagement per 90-day analytics"`)
+    - Policy details with specific numbers (`"OnlyFans subscription price floor: $4.99, ceiling: $49.99"`)
+    - Technical configuration (`"BullMQ concurrency:1, Redis maxmemory 2gb, eviction: allkeys-lru"`)
+  </Accordion>
+  <Accordion title="What gets a low entropy score?">
+    Low-entropy content (score ≤ 0.35) contains repetitive boilerplate:
+
+    - Generic greetings and transitions
+    - Repeated instructional phrases (`"To do this, follow these steps. First, open the settings. Then...`")
+    - Redundant summaries of information already in the context window
+    - Empty or near-empty node content
+  </Accordion>
+</AccordionGroup>
+
+## Context pruning: filling the budget
+
+Once all candidate chunks are scored, `prune_to_budget()` selects the highest-entropy chunks that fit within the token budget:
+
+```python
+# memory/retrieval/entropy/context_pruner.py
+def prune_to_budget(
+    chunks: List[Dict],
+    max_tokens: int = 4096,
+    min_entropy: float = 0.1,
+) -> List[Dict]:
+    # Drop obvious boilerplate
+    viable = [c for c in chunks if c["entropy"] >= min_entropy]
+
+    # Sort by entropy descending — highest information first
+    viable.sort(key=lambda c: c["entropy"], reverse=True)
+
+    # Fill context window
+    selected, used_tokens = [], 0
+    for chunk in viable:
+        tokens = estimate_tokens(chunk.get("content", ""))
+        if used_tokens + tokens <= max_tokens:
+            selected.append(chunk)
+            used_tokens += tokens
+
+    return selected
+```
+
+Token estimation uses a 1-token-per-4-characters approximation (`CHARS_PER_TOKEN = 4`) to avoid a tokenizer dependency.
+
+## The eviction report
+
+Every pruning pass produces an `eviction_report` — a structured summary of what was kept versus dropped:
+
+```python
+# memory/retrieval/entropy/context_pruner.py
+def eviction_report(chunks: List[Dict], selected: List[Dict]) -> Dict:
+    return {
+        "total_candidates": len(chunks),
+        "kept": len(selected),
+        "evicted": len(evicted),
+        "avg_entropy_kept":    _avg_entropy(selected),
+        "avg_entropy_evicted": _avg_entropy(evicted),
+        "evicted_ids": [c.get("id", "?") for c in evicted],
+    }
+```
+
+This report is written to `retrieval-performance.log` and is fully auditable. If a retrieval result seems wrong — the agent answered something it should have known — you can inspect the eviction report to see whether the relevant node was in the candidate set but pruned for budget reasons.
+
+<Tip>
+  The eviction report is the primary diagnostic tool for retrieval quality issues. If the agent is missing context it should have, check whether it was in the candidate set first (RRF/synaptic issue) or in the candidate set but evicted (entropy budget issue).
+</Tip>
+
+## CRAG: Corrective RAG
+
+After entropy gating produces the final context set, CRAG (Corrective RAG) validates that context before injection.
+
+The agent grades each retrieved chunk for relevance to the actual query:
+
+- **High confidence:** chunk is clearly relevant → injected normally
+- **Low confidence:** chunk relevance is uncertain → trigger fallback
+
+**Fallback paths for low-confidence retrievals:**
+
+1. **Web search fallback** — if the information needed exists on the public web (platform policy changes, current events, pricing updates), trigger a web search via the Stagehand or PinchTab MCP tools
+2. **HITL escalation** — if web search is insufficient or the query requires human judgment, push to the `hitl_sessions` collection for human review before responding
+
+<Info>
+  CRAG is the mechanism by which GenieHelper avoids confident hallucination. Rather than injecting low-confidence context and letting the LLM generate a plausible-sounding answer, the system explicitly surfaces its uncertainty and routes to a human or a live source.
+</Info>
+
+## Implementation files
+
+```
+memory/retrieval/entropy/
+├── shannon_filter.py   ← calculate_shannon_entropy(), calculate_token_entropy(),
+│                          score_chunk(), annotate_chunks()
+├── context_pruner.py   ← prune_to_budget(), eviction_report()
+└── __init__.py         ← exports prune_to_budget, eviction_report, annotate_chunks
+```
+
+### Key functions
+
+| Function | File | Description |
+|---|---|---|
+| `calculate_shannon_entropy(text)` | `shannon_filter.py` | Character-level H score; range 0–5.5+ |
+| `calculate_token_entropy(text)` | `shannon_filter.py` | Token-level H score; range 0–6+ |
+| `score_chunk(chunk)` | `shannon_filter.py` | Weighted blend (60% token, 40% char); range 0–1 |
+| `annotate_chunks(chunks)` | `shannon_filter.py` | Add `entropy` key to all chunks in-place |
+| `prune_to_budget(chunks, max_tokens, min_entropy)` | `context_pruner.py` | Select highest-entropy chunks within token budget |
+| `eviction_report(chunks, selected)` | `context_pruner.py` | Structured diff of kept vs evicted chunks |
+
+## Where entropy gating fits in the full pipeline
+
+```
+[Synaptic] expanded candidate set (seeds + fired nodes)
+    │
+    ▼
+[Entropy] annotate_chunks() → prune_to_budget() → eviction_report()
+    │
+    ▼
+[CRAG] grade remaining chunks for relevance
+    │        ┌─ high confidence → inject into prompt
+    └────────┤
+             └─ low confidence → web search fallback / HITL queue
+    │
+    ▼
+Validated context in agent system prompt
+```

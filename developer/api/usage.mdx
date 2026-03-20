@@ -1,0 +1,146 @@
+---
+title: "Usage & Quotas"
+description: "GET /api/usage — read the current user's subscription quota status, limits, and remaining allowances."
+---
+
+## GET /api/usage
+
+Returns the authenticated user's current subscription tier, plan limits, usage in the current billing cycle, and remaining allowances. Used by the dashboard to enforce quota limits in the UI and display usage indicators.
+
+```http
+GET /api/usage
+Authorization: Bearer <directus_jwt>
+```
+
+## Response
+
+<ResponseField name="tier" type="string">
+  The user's normalized subscription tier. One of: `starter`, `creator`, `pro`, `studio`.
+  
+  Tier aliases are normalized: `freemium` → `starter`, `elite` → `studio`.
+</ResponseField>
+
+<ResponseField name="limits" type="object">
+  Per-action limits for the current tier, sourced from `config/tier_rate_limits.json`. A value of `-1` means unlimited.
+</ResponseField>
+
+<ResponseField name="usage" type="object">
+  Number of times each billable action has been performed in the current billing cycle. Read from the `user_usage_counts` Directus collection.
+</ResponseField>
+
+<ResponseField name="remaining" type="object">
+  Remaining allowance per action (`limit - usage`). Clamped to `0` when exhausted. `-1` when unlimited.
+</ResponseField>
+
+```json
+{
+  "tier": "pro",
+  "limits": {
+    "post_creations": 200,
+    "taxonomy_tags": 500,
+    "media_modifications": 150
+  },
+  "usage": {
+    "post_creations": 47,
+    "taxonomy_tags": 203,
+    "media_modifications": 12
+  },
+  "remaining": {
+    "post_creations": 153,
+    "taxonomy_tags": 297,
+    "media_modifications": 138
+  }
+}
+```
+
+## Tier limits
+
+Limits are defined in `config/tier_rate_limits.json` and mapped to frontend-facing keys:
+
+| Action key | Internal feature key | Description |
+|-----------|---------------------|-------------|
+| `post_creations` | `caption_generator` | AI-generated captions and post drafts |
+| `taxonomy_tags` | `taxonomy_ai_calls` | Taxonomy classification AI calls |
+| `media_modifications` | `ai_clip_ops` | AI-powered media operations (clip, watermark, etc.) |
+
+| Tier | `post_creations` | `taxonomy_tags` | `media_modifications` |
+|------|-----------------|-----------------|---------------------|
+| Starter | 3 / mo | 10 / mo | 5 / mo |
+| Creator | 50 / mo | 100 / mo | 30 / mo |
+| Pro | 200 / mo | 500 / mo | 150 / mo |
+| Studio | Unlimited (-1) | Unlimited (-1) | Unlimited (-1) |
+
+## Billing cycle
+
+Usage resets at the start of each billing cycle. The cycle start is calculated from the user's `subscription_start` and `subscription_period` fields in Directus:
+
+- **monthly** — resets on the same day each month as `subscription_start`
+- **annual** — resets annually
+
+The current cycle start is computed by `getCurrentBillingCycleStart()` in `server/utils/rateLimiter.js`. Usage records with `billing_cycle_start >= cycleStart` are summed to produce the `usage` values.
+
+<Note>
+  If the `user_usage_counts` Directus collection is inaccessible (e.g., collection not yet created), the endpoint fails open and returns `usage: 0` for all actions rather than a 500 error.
+</Note>
+
+## POST /api/usage/increment
+
+Increments a usage counter for the authenticated user. Called server-side after a billable action completes successfully.
+
+```http
+POST /api/usage/increment
+Authorization: Bearer <directus_jwt>
+Content-Type: application/json
+```
+
+### Body
+
+<ParamField body="action" type="string" required>
+  The action key to increment. Must be one of: `post_creations`, `taxonomy_tags`, `media_modifications`.
+</ParamField>
+
+```json
+{ "action": "post_creations" }
+```
+
+### Response
+
+<ResponseField name="ok" type="boolean">
+  `true` when the counter was incremented.
+</ResponseField>
+
+<ResponseField name="remaining" type="number">
+  Remaining allowance after the increment.
+</ResponseField>
+
+<ResponseField name="limitHit" type="boolean">
+  `true` if this increment brought the user to or past their tier limit.
+</ResponseField>
+
+```json
+{
+  "ok": true,
+  "remaining": 152,
+  "limitHit": false
+}
+```
+
+## Dashboard integration
+
+The React dashboard exposes usage data globally via `AuthContext`:
+
+```javascript
+const { usageData, refetchUsage } = useAuth();
+// usageData: { tier, limits, usage, remaining }
+// refetchUsage(): re-fetches /api/usage and updates context
+```
+
+`TIER_FLAGS` in the dashboard mirrors `tier_rate_limits.json` exactly. When updating tier limits, both files must be kept in sync.
+
+## Error responses
+
+| Status | Body | Cause |
+|--------|------|-------|
+| `400` | `{ "error": "Invalid action. Must be one of: ..." }` | Invalid action key in increment request |
+| `401` | `{ "error": "Missing Bearer token" }` | No Authorization header |
+| `500` | `{ "error": "..." }` | Directus unreachable or unexpected error |

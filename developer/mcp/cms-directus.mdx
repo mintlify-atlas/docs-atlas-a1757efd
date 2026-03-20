@@ -1,0 +1,247 @@
+---
+title: cms.directus
+description: 55-tool plugin providing full Directus 11 API coverage — items CRUD, users, files, flows, fields, relations, roles, policies, permissions, settings, schema, activity, and revisions.
+---
+
+**Plugin ID:** `cms.directus` | **Version:** 2.0.0 | **Tools:** 55
+
+The `cms.directus` plugin is the primary data layer for all agent-driven writes in GenieHelper. It provides complete Directus 11 REST API coverage so the agent never needs raw `fetch()` calls to Directus — every operation is available as a named, schema-validated MCP tool.
+
+<Warning>
+All Directus writes from server code must go through these MCP tools. The only exceptions are `register.js` and `rbacSync.js`, which run pre-auth and require `DIRECTUS_ADMIN_TOKEN` directly. See the [MCP overview](/developer/mcp/overview) for the full constraint.
+</Warning>
+
+## Authentication
+
+The plugin authenticates using a static `MCP_SERVICE_TOKEN` Bearer header. No JWT refresh cycle is required — the service token is long-lived and scoped to the MCP service account. The token is loaded once from the environment by `lib/services.mjs` and passed to all plugin handlers.
+
+```http
+Authorization: Bearer <MCP_SERVICE_TOKEN>
+```
+
+## Why 55 tools?
+
+Directus 11 exposes a large surface area — items, users, files, flows, fields, relations, roles, policies, permissions, settings, server info, schema migrations, and audit logs. Before Sprint 5, the plugin covered only 17 tools (basic CRUD + users + files + flows). The expansion to 55 tools means:
+
+- The agent can introspect and mutate the schema without SSH access
+- RBAC management (roles, policies, permissions) is fully automated
+- Schema migrations can be diffed and applied programmatically
+- Audit trails (`list-activity`, `list-revisions`) are queryable
+- Flow lifecycle (create/update/delete) is fully managed
+
+<Note>
+Directus's built-in `request` flow operation is broken — it returns `{}` regardless of the target URL and payload. This is a known Directus 11 limitation. These MCP tools bypass that entirely by calling the Directus REST API directly.
+</Note>
+
+## Known flow UUIDs
+
+| Flow | UUID prefix |
+|---|---|
+| genie-memory-sync | `591a8845` |
+| genie-taxonomy-tag | `7506f825` |
+| genie-post-create | `50a4dc14` |
+| genie-message-generate | `a4f083fa` |
+
+Use `trigger-flow` with these UUIDs to invoke flows from agent context.
+
+## Tool reference
+
+### Items and collections
+
+<AccordionGroup>
+  <Accordion title="list-collections — list all custom collections">
+    Lists all user-defined Directus collections, excluding internal `directus_*` system tables.
+
+    Returns an array of collection metadata objects including field count, schema info, and access policies.
+  </Accordion>
+
+  <Accordion title="get-collection-schema — get field schema">
+    Returns the full field schema for a collection via `/fields/{collection}`.
+
+    **Important:** Always call this before using `read-items` with a `?fields=` projection. Requesting a non-existent field returns HTTP 403 on the entire request, not a partial result.
+  </Accordion>
+
+  <Accordion title="read-items — paginated collection query">
+    Read multiple items with filter, sort, pagination, and field projection support. Mirrors the Directus `GET /items/{collection}` endpoint.
+
+    Supports the full Directus filter syntax: `_eq`, `_in`, `_contains`, `_between`, logical `_and`/`_or` operators.
+  </Accordion>
+
+  <Accordion title="read-item — single item by UUID">
+    Fetch a single item by primary key from any collection.
+  </Accordion>
+
+  <Accordion title="create-item — create with tier gate">
+    Creates an item in any collection. Writes to `media_jobs` are tier-gated via `rateLimiter.js` before insertion — the agent's `user_id` field is checked against the creator's subscription tier to enforce job quota limits.
+  </Accordion>
+
+  <Accordion title="update-item — PATCH by UUID">
+    PATCH update a single item. Accepts a partial payload — only provided fields are updated.
+  </Accordion>
+
+  <Accordion title="delete-item — DELETE by UUID">
+    Hard-delete a single item. Irreversible. Use `list-revisions` to check revision history before deleting if needed.
+  </Accordion>
+
+  <Accordion title="search-items — full-text search">
+    Full-text search across all string fields in a collection. Wraps the Directus `POST /items/{collection}/search` endpoint.
+  </Accordion>
+
+  <Accordion title="create-collection — create new collection">
+    Create a new Directus collection with an initial fields array. Used for dynamic schema provisioning.
+  </Accordion>
+
+  <Accordion title="delete-collection — drop collection and data">
+    Permanently deletes a collection and all its records. Use with caution — this is irreversible.
+  </Accordion>
+</AccordionGroup>
+
+### Fields and relations
+
+<AccordionGroup>
+  <Accordion title="list-fields">
+    List all fields on a collection with type, required status, default values, and interface config.
+  </Accordion>
+  <Accordion title="create-field">
+    Add a new field to an existing collection. Supports all Directus field types (string, integer, json, uuid, timestamp, etc.).
+  </Accordion>
+  <Accordion title="update-field">
+    Update field metadata such as required status, default value, validation rules, or display options.
+  </Accordion>
+  <Accordion title="delete-field">
+    Remove a field from a collection. All data in that column is permanently dropped.
+  </Accordion>
+  <Accordion title="list-relations">
+    List all relations (foreign keys, one-to-many, many-to-many) across the entire Directus instance.
+  </Accordion>
+  <Accordion title="create-relation">
+    Define a new relation between two collections. Supports O2M, M2O, and M2M junction table patterns.
+  </Accordion>
+  <Accordion title="delete-relation">
+    Remove a relation. Does not delete the underlying column — only the Directus relation definition.
+  </Accordion>
+</AccordionGroup>
+
+### Users and auth
+
+<AccordionGroup>
+  <Accordion title="get-me">
+    Returns the profile of the MCP service account. Useful for verifying which role and permissions the current token carries.
+  </Accordion>
+  <Accordion title="list-users">
+    List all Directus users. Supports filter and field projection. Admin-only.
+  </Accordion>
+  <Accordion title="get-user">
+    Fetch a single user record by UUID including role, status, last_access, and custom fields.
+  </Accordion>
+  <Accordion title="create-user">
+    Create a new Directus user with role assignment. Used by the RBAC sync pipeline when provisioning new creators.
+  </Accordion>
+  <Accordion title="update-user">
+    PATCH update user fields — status, role, custom metadata, etc.
+  </Accordion>
+  <Accordion title="delete-user">
+    Permanently delete a Directus user and all their owned records (subject to collection policies).
+  </Accordion>
+  <Accordion title="invite-user">
+    Send a Directus invite email to a new user. The invite link includes a one-time token for account setup.
+  </Accordion>
+</AccordionGroup>
+
+### Files
+
+<AccordionGroup>
+  <Accordion title="list-files">
+    List Directus file assets with filter and pagination support. Returns metadata including filename, type, filesize, and a computed `asset_url`.
+  </Accordion>
+  <Accordion title="get-file">
+    Fetch metadata for a single file asset. The response includes a computed `asset_url` pointing to `DIRECTUS_URL/assets/{id}` for direct media access.
+  </Accordion>
+  <Accordion title="delete-file">
+    Delete a file from Directus storage. Removes both the database record and the file on disk.
+  </Accordion>
+  <Accordion title="import-file">
+    Import a file from an external URL into Directus storage. Useful for ingesting platform-scraped media.
+  </Accordion>
+</AccordionGroup>
+
+### Flows and operations
+
+<AccordionGroup>
+  <Accordion title="list-flows">
+    Returns all Directus Flows with id, name, status, and trigger configuration. Use this to look up flow UUIDs before calling `trigger-flow`.
+  </Accordion>
+  <Accordion title="trigger-flow">
+    POST to a Flow's webhook trigger endpoint by UUID. This is the correct mechanism for invoking Directus automation from agent context — the `request` flow operation is broken and returns `{}`.
+  </Accordion>
+  <Accordion title="create-flow / update-flow / delete-flow">
+    Full CRUD for Directus Flow definitions. Used by the admin agent to provision and maintain automation pipelines.
+  </Accordion>
+  <Accordion title="list-operations / create-operation">
+    List operations within a flow and append new operation nodes. Used for programmatic flow construction.
+  </Accordion>
+</AccordionGroup>
+
+### Roles, policies, and permissions
+
+<AccordionGroup>
+  <Accordion title="list-roles / get-role / create-role / update-role / delete-role">
+    Full role management. Roles are the top-level RBAC container in Directus 11. Each creator tier (Starter, Creator, Pro, Studio) maps to a distinct role.
+  </Accordion>
+  <Accordion title="list-policies / get-policy">
+    Access policies define which collections and operations a role can access. Policies are attached to roles and evaluated at request time.
+  </Accordion>
+  <Accordion title="list-permissions / create-permission / update-permission / delete-permission">
+    Granular permission rules within a policy. Supports field-level access control and row-level filter expressions (e.g., `user_id=$CURRENT_USER` for data isolation).
+  </Accordion>
+</AccordionGroup>
+
+### Settings and server
+
+<AccordionGroup>
+  <Accordion title="get-settings / update-settings">
+    Read and update Directus global settings (project name, default language, auth token TTL, etc.).
+  </Accordion>
+  <Accordion title="server-health">
+    `GET /server/health` — returns uptime and status of connected services (database, cache, storage).
+  </Accordion>
+  <Accordion title="server-info">
+    `GET /server/info` — returns Directus version, Node.js version, and OS details.
+  </Accordion>
+</AccordionGroup>
+
+### Activity and revisions
+
+<AccordionGroup>
+  <Accordion title="list-activity">
+    Query the Directus audit log. Every create/update/delete operation performed through the API is recorded here with user, timestamp, collection, and item ID.
+
+    Useful for debugging agent writes and auditing which MCP tool modified a record.
+  </Accordion>
+  <Accordion title="list-revisions">
+    Retrieve the full revision history for a specific item. Each revision stores the delta of changed fields, enabling rollback inspection.
+  </Accordion>
+</AccordionGroup>
+
+### Schema
+
+<AccordionGroup>
+  <Accordion title="get-schema-snapshot">
+    Export the complete current schema as a JSON snapshot. Use this to capture the schema state before running migrations.
+  </Accordion>
+  <Accordion title="diff-schema">
+    Diff a target schema JSON against the current live schema. Returns a diff object describing additions, modifications, and removals.
+  </Accordion>
+  <Accordion title="apply-schema">
+    Apply a schema diff to the live database. This is how programmatic migrations are executed — diff first, review, then apply.
+  </Accordion>
+</AccordionGroup>
+
+## Configuration
+
+| Setting | Value |
+|---|---|
+| Auth | `MCP_SERVICE_TOKEN` Bearer |
+| Base URL | `http://127.0.0.1:8055` |
+| Timeout | 10,000 ms |
+| Concurrency | 10 parallel tool calls |

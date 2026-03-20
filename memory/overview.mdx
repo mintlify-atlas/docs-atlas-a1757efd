@@ -1,0 +1,149 @@
+---
+title: "Memory system overview"
+description: "How GenieHelper's cognitive memory stack works: five layers, a hybrid retrieval pipeline, and nightly consolidation that keeps the knowledge graph self-improving."
+---
+
+Most RAG systems are dumb vector lookups — you embed a query, pull the nearest chunks, and hope. GenieHelper's memory subsystem is architecturally different. It treats memory as a set of **five distinct layers**, each with a specific role, and routes every retrieval request through a multi-stage pipeline that combines keyword search, semantic similarity, graph propagation, and entropy-based pruning before a single token reaches the agent prompt.
+
+## The five memory layers
+
+<CardGroup cols={2}>
+  <Card title="Working memory" icon="bolt">
+    The agent's active context window for the current session. Holds the live conversation, recent tool results, and injected skill context. Cleared between sessions.
+  </Card>
+  <Card title="Core memory" icon="database">
+    The DuckDB skill graph (`memory/core/agent_memory.duckdb`). 191 procedural skills across 11 categories, stored as 252 nodes and 12,880+ weighted edges. Queried at session start via JIT hydration.
+  </Card>
+  <Card title="Procedural memory" icon="gear">
+    Executable skill modules in `agent-skills/`. Each skill is a Markdown document describing how to perform a specific task — scheduling posts, managing fan DMs, running analytics. Ingested into DuckDB by `ingest_skills.py`.
+  </Card>
+  <Card title="Archival memory" icon="archive">
+    Long-term curated summaries of each creator's history, preferences, and performance patterns. Injected into the agent system prompt at workspace initialization. *(Planned — not yet implemented.)*
+  </Card>
+  <Card title="Recall memory" icon="rotate-left">
+    Verbatim session logs stored for exact retrieval — not semantic. Used when the agent needs to recall a specific fact said in a prior conversation rather than a semantically similar one. *(Planned — not yet implemented.)*
+  </Card>
+</CardGroup>
+
+<Note>
+  Working memory, Core memory, and Procedural memory are fully active. Archival and Recall are designed and structurally ready but not yet implemented.
+</Note>
+
+## Storage backends
+
+| Store | Technology | Contents |
+|---|---|---|
+| Skill graph | DuckDB (`agent_memory.duckdb`) | 191 skills · 252 nodes · 12,880+ edges |
+| Taxonomy graph | JSON (`Nodes/Universe/taxonomy_graph.json`) | 3,205 nodes · CO\_OCCURS edge weights |
+| Vector store | PostgreSQL pgvector | Semantic embeddings for document chunks |
+| Creator nodes | Directus `user_nodes` collection | Per-creator Hebbian-weighted concept activations |
+| Node tiers | `Nodes/Universe/` · `Nodes/User/` · `Nodes/Transitional/` | Graph promotion pipeline |
+
+## The retrieval pipeline
+
+Every time the agent needs context — whether for answering a creator question, generating content, or making a scheduling decision — the following pipeline runs:
+
+```
+Creator query
+    │
+    ▼
+[1] HyDE — generate hypothetical ideal answer, embed that instead of the raw query
+    │
+    ▼
+[2] Dense retrieval — pgvector cosine similarity against embedded document chunks
+[2] BM25 sparse retrieval — keyword term matching against Nodes/ JSON files
+    │
+    ▼
+[3] RRF fusion — Reciprocal Rank Fusion merges both rank lists (k=60)
+    │
+    ▼
+[4] Synaptic propagation — seed nodes activate connected taxonomy nodes via LIF neurons
+    │
+    ▼
+[5] Shannon entropy gate — low-information nodes evicted; budget-constrained context assembled
+    │
+    ▼
+[6] CRAG validation — retrieved context graded; low-confidence results trigger web search or HITL escalation
+    │
+    ▼
+Validated context injected into agent prompt
+```
+
+<Steps>
+  <Step title="HyDE: hypothetical document embeddings">
+    Before the query ever touches the vector store, the agent generates a *hypothetical ideal answer* to the query and embeds that instead of the raw query text. This bridges the semantic distance between how a creator phrases a question and how the relevant documents are written. See [HyDE retrieval](/memory/hyde-retrieval).
+  </Step>
+  <Step title="Dual retrieval: dense + sparse">
+    Two independent retrieval methods run in parallel. Dense retrieval uses pgvector cosine similarity to find semantically related chunks. BM25 sparse retrieval runs keyword term matching against node JSON files — catching exact platform names, creator handles, and domain-specific terminology that vector search misses.
+  </Step>
+  <Step title="RRF fusion">
+    The two ranked lists are merged using Reciprocal Rank Fusion without requiring a trained reranker. Each document's score is `Σ 1/(60 + rank_i)` across both lists, so strong agreement between methods pushes results to the top. See [RRF fusion](/memory/rrf-fusion).
+  </Step>
+  <Step title="Synaptic propagation">
+    The top-ranked nodes from RRF become seed nodes. A Leaky Integrate-and-Fire neuron model propagates activation through the taxonomy graph — nodes semantically adjacent to the seeds accumulate charge and fire into context. A query about \"beach yoga\" automatically surfaces fitness, outdoor, and lifestyle nodes without those terms appearing in the query. See [Synaptic propagation](/memory/synaptic-propagation).
+  </Step>
+  <Step title="Shannon entropy gating">
+    The expanded candidate set is pruned to fit within the context budget. Nodes are scored by Shannon entropy — high-redundancy, low-information chunks are evicted first. An `eviction_report` records what was dropped and why. See [Entropy gating](/memory/entropy-gating).
+  </Step>
+  <Step title="CRAG validation">
+    Retrieved context is graded for relevance before injection. Low-confidence retrievals do not silently pass through — they trigger a web search fallback or escalation to the human-in-the-loop queue. The agent knows what it doesn't know. See [Entropy gating](/memory/entropy-gating).
+  </Step>
+</Steps>
+
+## The nightly consolidation cycle
+
+Retrieval only works if the knowledge graph stays current. Every night, a consolidation cycle runs two processes:
+
+| Time (UTC) | Process | What it does |
+|---|---|---|
+| 02:00 | `node-decay.mjs` | Applies Hebbian decay to all `user_nodes` in Directus — recently activated nodes strengthen, dormant nodes decay toward `status: 'decayed'` |
+| 02:30 | `taxonomy-hebbian.mjs` | Boosts CO_OCCURS edge weights between tags that co-appeared in creator content; applies global decay to the taxonomy graph |
+| 02:45 | `taxonomy-reconcile.mjs` | Classifies `pending_review` tags as active |
+| 03:00 | `fp_growth.mjs` | *(Planned)* Cross-creator FP-Growth pattern mining promotes collective patterns to `Nodes/Universe/` |
+
+<Tip>
+  The consolidation cycle is the feedback loop that makes GenieHelper self-improving. Without it, the taxonomy graph would accumulate dead weight from concepts creators tried once and abandoned, and never capture genuine trends emerging across the creator community.
+</Tip>
+
+### Node tiers
+
+Knowledge nodes flow through three tiers:
+
+```
+Nodes/User/{creator-uuid}/     ← per-creator activation records
+         │
+         │  FP-Growth cross-user pattern mining (nightly)
+         ▼
+Nodes/Transitional/            ← patterns awaiting promotion review
+         │
+         │  Promotion to universal graph
+         ▼
+Nodes/Universe/                ← canonical 3,205-node taxonomy graph
+```
+
+## JIT skill hydration
+
+Skills are not preloaded. At session start, `surgical_context.py activate "<task>"` runs stimulus propagation across the DuckDB skill graph and surfaces the top-N most relevant procedural skills for the current task. Only the relevant skills consume context window tokens.
+
+```bash
+python3 memory/core/surgical_context.py activate "schedule Instagram posts for this week"
+```
+
+This queries the 191-skill graph (252 nodes, 12,880+ edges) and returns the ranked subset of skills most relevant to scheduling — without loading the full skill library.
+
+## Implementation map
+
+<CardGroup cols={2}>
+  <Card title="Skill graph" icon="diagram-project" href="/memory/hyde-retrieval">
+    `memory/core/` — `ingest_skills.py`, `surgical_context.py`, `agent_memory.duckdb`
+  </Card>
+  <Card title="Hybrid retrieval" icon="magnifying-glass" href="/memory/rrf-fusion">
+    `memory/retrieval/` — `rrf/`, `synaptic/`, `entropy/`
+  </Card>
+  <Card title="Nightly consolidation" icon="moon" href="/memory/hebbian-consolidation">
+    `memory/consolidation/hebbian/` — `node-decay.mjs`, `taxonomy-hebbian.mjs`
+  </Card>
+  <Card title="Cross-user patterns" icon="users" href="/memory/hebbian-consolidation">
+    `memory/consolidation/cross_user/` — FP-Growth mining *(planned)*
+  </Card>
+</CardGroup>

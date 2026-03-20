@@ -1,0 +1,112 @@
+---
+title: AI System Overview
+description: How GenieHelper runs sovereign, locally-hosted AI inference for adult content creators — no cloud LLMs, no data leakage, no corporate content policy.
+---
+
+GenieHelper is not a thin wrapper around OpenAI. Every inference call, every content draft, every agent decision runs on models hosted on the same dedicated server as your data. Nothing leaves the VPS. No third-party LLM provider ever sees your fan data, your content, or your credentials.
+
+This page explains the architecture behind that guarantee and links to the detailed subsystem guides.
+
+## The Sovereign AI principle
+
+<Info>
+  **All inference is local.** GenieHelper runs on an IONOS dedicated server (Ubuntu 24, 16 GB RAM, 1 TB NVMe). Ollama hosts three models on-device. The only cloud LLM dependency is the optional PowerAdmin bypass for admin accounts — and that is explicitly opt-in.
+</Info>
+
+Most AI platforms route your prompts through OpenAI, Anthropic, or another managed API. That means your fan messages, your platform credentials, your revenue figures, and your content ideas transit a third-party network and feed someone else's training pipeline.
+
+GenieHelper flips that contract. The consequence: no GPU acceleration today (CPU-bound inference at ~2–5 seconds per call), and no safety filters censoring the content writers do for a living. Both are deliberate trade-offs.
+
+## Three Ollama models
+
+Each model has a specific role. They are not interchangeable.
+
+<CardGroup cols={2}>
+  <Card title="dolphin3:8b-llama3.1-q4_K_M" icon="cpu">
+    **Orchestrator and tool planner.** Handles multi-step reasoning, ACTION tag emission, and flow decomposition. Chosen for its instruction-following reliability on tool-use tasks.
+  </Card>
+  <Card title="dolphin-mistral:7b" icon="pen-line">
+    **Uncensored content writer.** Drafts captions, fan messages, post concepts, and custom request responses. No corporate content policy. Runs in the creator's voice.
+  </Card>
+  <Card title="qwen-2.5:latest" icon="code">
+    **Primary AnythingLLM agent.** Handles code generation, structured JSON output, and the main chat agent workspace. Default model across MCP tool calls.
+  </Card>
+</CardGroup>
+
+### Resource profile
+
+| Metric | Value |
+|---|---|
+| RAM pinned at steady state | ~4.8 GB |
+| Qwen 2.5 7B inference latency (CPU) | ~2–5 s/call |
+| RAM ceiling (full server) | 16 GB |
+| BullMQ queue concurrency | 1 (prevents RAM exhaustion) |
+
+<Warning>
+  Never run concurrent Ollama inference jobs. The 16 GB RAM ceiling is firm. BullMQ is set to `concurrency: 1` across all three queues (`media-jobs`, `scrape-jobs`, `onboarding-jobs`) specifically to prevent OOM conditions.
+</Warning>
+
+## PowerAdmin Claude bypass
+
+Admin accounts (`admin_access: true`) route through the Anthropic Claude API instead of Ollama. This is the only cloud LLM path in the system.
+
+```javascript
+// server/endpoints/api/genieChat.js — simplified
+if (req.directusUser?.admin_access) {
+  // Claude API via ANTHROPIC_API_KEY
+} else {
+  // Ollama — local inference only
+}
+```
+
+To activate the bypass, set `ANTHROPIC_API_KEY` in `server/.env`. Regular creator accounts always use Ollama regardless of this key being present.
+
+<Note>
+  The PowerAdmin bypass exists for development and support workflows, not for production creator sessions. Creator data never touches the Claude API.
+</Note>
+
+## JIT skill hydration
+
+GenieHelper maintains 191 procedural skills across 11 categories in a DuckDB skill graph (`memory/core/agent_memory.duckdb`). Skills are **not** preloaded into every session — that would exhaust the context window.
+
+Instead, at the start of each session `surgical_context.py` runs stimulus propagation across the graph and surfaces only the top-N skills relevant to the current task:
+
+```bash
+# Called at session start inside genieChat.js
+python3 memory/core/surgical_context.py activate "<task description>"
+```
+
+The script returns a ranked list of skill keys. The agent loads only those skills into context — everything else stays on disk. This is what makes a 7B model capable of navigating a 191-skill procedural library without hallucinating skill names or parameters.
+
+See [Local Inference](/ai/local-inference) for the full hydration mechanics.
+
+## Model selection flow
+
+```
+Incoming chat request
+    │
+    ├─ admin_access = true ───────────────► Claude API (ANTHROPIC_API_KEY)
+    │
+    └─ regular creator ──────────────────► Ollama
+                                               │
+                                               ├─ content drafting ──► dolphin-mistral:7b
+                                               ├─ tool planning  ────► dolphin3:8b-llama3.1
+                                               └─ agent / JSON  ─────► qwen-2.5:latest
+```
+
+## Subsystem guides
+
+<CardGroup cols={2}>
+  <Card title="Local inference" icon="server" href="/ai/local-inference">
+    Ollama installation, model management, context window budgeting, and JIT skill hydration in detail.
+  </Card>
+  <Card title="Action Runner" icon="play" href="/ai/action-runner">
+    How the agent emits ACTION tags and how the deterministic execution layer intercepts and runs them.
+  </Card>
+  <Card title="MCP tools" icon="wrench" href="/ai/mcp-tools">
+    The unified genie-mcp-server: 83 tools across 6 plugin namespaces.
+  </Card>
+  <Card title="Memory & retrieval" icon="brain" href="/memory/overview">
+    HyDE, RRF, synaptic propagation, Shannon entropy gating, and nightly Hebbian consolidation.
+  </Card>
+</CardGroup>

@@ -1,0 +1,163 @@
+---
+title: memory.recall
+description: 4-tool plugin for procedural memory retrieval — JIT skill hydration via RRF + synaptic propagation + entropy gating across a 191-skill, 12,880+ edge DuckDB graph.
+---
+
+**Plugin ID:** `memory.recall` | **Version:** 1.0.0 | **Tools:** 4
+
+The `memory.recall` plugin is GenieHelper's procedural memory retrieval layer. It surfaces relevant agent skills from a DuckDB skill graph in response to task queries, using a multi-stage retrieval pipeline that combines sparse search, dense activation, reciprocal rank fusion, synaptic propagation, and entropy pruning.
+
+All four tools are thin MCP wrappers around `memory/core/surgical_context.py`, invoked as a Python subprocess.
+
+## Skill store
+
+The skill store lives in `memory/core/agent_memory.duckdb`:
+
+| Metric | Value |
+|---|---|
+| Total skills | 191 |
+| Graph nodes | 252 |
+| Graph edges | 12,880+ |
+| Storage | DuckDB (embedded, file-backed) |
+
+Skills are structured procedural knowledge modules — each skill has a name, description, tags, level-2 content sections, and correlation edges to related skills. The graph edges encode strength-of-association between skills, enabling associative traversal during retrieval.
+
+## Retrieval pipeline
+
+When `activate_skills` is called, `surgical_context.py` runs a five-stage pipeline:
+
+```
+query
+  └─ 1. BM25 sparse search
+  |      └─ keyword match across Nodes/ JSON files
+  └─ 2. DuckDB dense activation
+  |      └─ tag-weighted skill lookup in agent_memory.duckdb
+  └─ 3. RRF fusion
+  |      └─ Reciprocal Rank Fusion merges sparse + dense ranked lists
+  └─ 4. Synaptic propagation
+  |      └─ top-N seeds → traverse graph edges → pull in correlated skills
+  └─ 5. Entropy gating
+         └─ prune low-information-gain nodes from propagated set
+         └─ return final ranked skill list with scores
+```
+
+The result is a ranked list of skills most relevant to the query, including both directly-matched skills and their associative neighbors from the graph.
+
+## Tools
+
+### `activate_skills` — JIT skill hydration
+
+The primary entry point for the retrieval pipeline. Takes a free-text task description and returns activated skills with relevance scores and associative context nodes.
+
+**Parameters:**
+- `query` — free-text description of the current task or user intent
+
+**Returns:** Array of activated skill entries with:
+- `name` — skill identifier
+- `score` — RRF-fused relevance score
+- `tags` — skill tags
+- `associative_context` — neighboring nodes pulled in by synaptic propagation
+
+**When to call `activate_skills`:**
+
+Call this at the start of any non-trivial agent task before selecting tools or writing code. The returned skills provide procedural context — step sequences, known gotchas, tool preferences — that would otherwise require reading through the full skill library.
+
+```
+Example queries:
+  activate_skills("schedule a post for OnlyFans with watermarked video")
+  activate_skills("draft fan reply messages for a creator's inbox")
+  activate_skills("onboard a new creator and scrape their profile")
+  activate_skills("rebuild taxonomy graph after bulk tag ingest")
+```
+
+<Tip>
+At session start, call `activate_skills` with the task description before any other tool calls. Skills surface tool sequences, parameter conventions, and edge cases specific to GenieHelper — they are more precise than general-purpose reasoning.
+</Tip>
+
+### `get_skill` — hydrate full skill definition
+
+Retrieves the complete skill definition from DuckDB by name: description, full content sections, tools used, tags, and correlation edges to related skills.
+
+**Parameters:**
+- `name` — skill name (e.g., `caption-generator`, `watermark-media`, `onboarding-flow`)
+
+**Returns:** Full skill object including:
+- `description` — one-line summary
+- `sections` — level-2 content sections (step-by-step procedures, parameters, examples)
+- `tools` — MCP tool names the skill uses
+- `tags` — classification tags
+- `correlations` — related skill names with edge weights
+
+Use `get_skill` after `activate_skills` returns a candidate — `activate_skills` gives you the ranked list, `get_skill` gives you the full content to inject into the LLM context.
+
+### `find_skills` — tag-based skill search
+
+Searches the skill store by comma-separated tags. Returns matching skills ranked by tag overlap score.
+
+**Parameters:**
+- `tags` — comma-separated tag string (e.g., `"media,watermark,onlyfans"`)
+
+**Returns:** Array of matching skill names with tag overlap scores.
+
+Use `find_skills` when you know the domain but not the specific task — for example, finding all skills tagged `media` before choosing the right one for a watermarking workflow.
+
+### `memory_recall` — context chunks for prompt injection
+
+Runs the full retrieval pipeline and returns context chunks formatted for direct injection into an LLM prompt. Combines BM25 sparse search on `Nodes/` JSON files, DuckDB dense activation, RRF fusion, synaptic propagation, and entropy pruning. Respects a token budget.
+
+**Parameters:**
+- `query` — free-text query
+- `max_tokens` — token budget for returned context (256–8192, default 2048)
+
+**Returns:** Formatted context string ready for LLM injection, truncated to `max_tokens`.
+
+Use `memory_recall` when you need to inject relevant procedural context directly into a prompt rather than selecting individual skills to act on.
+
+## How synaptic propagation works
+
+Synaptic propagation is the graph traversal phase of the retrieval pipeline. After BM25 + DuckDB search produces a ranked seed set:
+
+```
+1. Take top-N seeds (default N=5)
+2. For each seed skill, traverse outbound graph edges in agent_memory.duckdb
+3. Weight each neighbor by: seed_score × edge_weight
+4. Merge neighbors into the candidate set
+5. Apply entropy gating: drop candidates where information gain < threshold
+6. Re-rank remaining candidates by fused score
+```
+
+This means a query about "watermark a video for OnlyFans" may also surface skills about `ffprobe-validation`, `platform-compliance`, and `media-job-polling` via their graph edges — related skills that the agent would need but might not have explicitly queried for.
+
+## Relationship to taxonomy
+
+The taxonomy graph (`taxonomy.core`) and the skill graph (`memory.recall`) are separate structures but interact:
+
+- `CO_OCCURS` edges from the taxonomy graph influence which content tags are considered related
+- Skills tagged with taxonomy super-concepts (e.g., `sc:content_format`) activate when content classification tasks are detected
+- The Hebbian nightly cron strengthens edges in both graphs based on actual agent task patterns
+
+## Technical implementation
+
+All four tools delegate to `memory/core/surgical_context.py` via a Node.js `spawn()` subprocess:
+
+```javascript
+spawn("python3", [SCRIPT, command, ...args], { cwd: REPO_ROOT })
+```
+
+The script receives a command name as the first argument (`activate`, `memory_recall`, `get_skill`, `find_skills`) and returns JSON on stdout. The MCP handler parses the JSON and returns it as the tool result.
+
+<Note>
+`surgical_context.py` opens `memory/core/agent_memory.duckdb` as a read-only connection by default. The `activate_skills` and `memory_recall` commands do not mutate the skill graph — graph updates happen through the nightly consolidation pipeline, not through MCP.
+</Note>
+
+## Configuration
+
+| Setting | Value |
+|---|---|
+| Script | `memory/core/surgical_context.py` |
+| Database | `memory/core/agent_memory.duckdb` |
+| Skills | 191 |
+| Graph nodes | 252 |
+| Graph edges | 12,880+ |
+| Runtime | Python 3 (subprocess) |
+| Timeout | (inherits genie-mcp-server default) |

@@ -1,0 +1,136 @@
+---
+title: "API Reference"
+description: "REST API endpoints for the GenieHelper server — authentication, rate limiting, and all available routes."
+---
+
+The GenieHelper server runs as a forked AnythingLLM Express process on **port 3001**. All GenieHelper-specific endpoints are mounted under `/api/` alongside the standard AnythingLLM routes.
+
+## Base URL
+
+```
+http://localhost:3001
+```
+
+For production deployments, the server is proxied behind Nginx with WebSocket support. All requests to `/api/genie/*`, `/api/queue/*`, `/api/credentials/*`, `/api/skills/*`, and `/api/usage` are served by this process.
+
+## Authentication
+
+All GenieHelper custom endpoints require a **Directus JWT** passed as a Bearer token in the `Authorization` header.
+
+```http
+Authorization: Bearer <directus_jwt>
+```
+
+The token is issued by Directus on login and carries the user's identity, role, and subscription tier. The `unifiedAuth` middleware (`server/utils/middleware/unifiedAuth.js`) validates the Directus JWT on every request, bridges the Directus user to the corresponding Prisma/AnythingLLM user via `anythingllm_user_id`, and attaches `req.directusUser` for downstream handlers.
+
+<Info>
+  The same Directus JWT works across both GenieHelper custom endpoints and native AnythingLLM endpoints. You do not need separate tokens.
+</Info>
+
+<Warning>
+  Tokens are short-lived. The dashboard handles auto-refresh. If you are calling the API directly, refresh your token before it expires to avoid 401 errors.
+</Warning>
+
+## Endpoints
+
+| Method | Path | Description |
+|--------|------|-------------|
+| `POST` | `/api/genie/stream-chat` | Send a message; returns an SSE stream with the agent response |
+| `GET` | `/api/queue/stats` | Read BullMQ queue depths and taxonomy cache status |
+| `POST` | `/api/queue/media` | Enqueue a media processing job |
+| `POST` | `/api/queue/retry/:jobId` | Re-enqueue a failed media job |
+| `POST` | `/api/queue/taxonomy/invalidate` | Bust the taxonomy DuckDB cache |
+| `POST` | `/api/credentials/store` | Encrypt and persist platform credentials |
+| `POST` | `/api/credentials/reveal` | Decrypt and return platform credentials |
+| `GET` | `/api/skills` | List available agent skills with filtering and pagination |
+| `GET` | `/api/skills/:id` | Fetch a single skill by UUID or name |
+| `POST` | `/api/skills/activate` | Stimulus propagation — find relevant skills for a task |
+| `POST` | `/api/skills/search` | Full-text skill search |
+| `GET` | `/api/skills/:id/related` | Get skills related to a given skill |
+| `GET` | `/api/usage` | Read current user's subscription quota and remaining allowances |
+| `POST` | `/api/usage/increment` | Increment a usage counter for a billable action |
+| `POST` | `/api/register` | Invite-gated public registration (rate-limited) |
+| `GET/PATCH` | `/api/onboarding` | Onboarding state machine read and update |
+| `POST` | `/api/rbac-sync` | Webhook: sync Directus role change to AnythingLLM permissions |
+| `POST` | `/api/impersonate` | Admin-only: swap session to impersonate a user |
+| `POST` | `/api/captions/generate` | Generate AI captions with quota enforcement |
+| `GET/PATCH` | `/api/user-proxy` | User profile read and file upload via admin-token proxy |
+| `GET` | `/api/fans` | Fan profile data retrieval |
+| `POST` | `/api/posts/schedule` | Create a scheduled post with tier quota enforcement |
+| `POST` | `/api/goose` | Goose agent admin operations |
+
+## Rate limiting
+
+Only the registration endpoint is rate-limited at the Express layer:
+
+| Route | Limit | Window |
+|-------|-------|--------|
+| `POST /api/register` | 10 requests | 15 minutes |
+
+This limit is enforced by `express-rate-limit` in `server/endpoints/api/register.js` and applies per IP address. It protects the invite-gated registration flow from abuse.
+
+All other endpoints are not rate-limited at the HTTP layer. Instead, billable operations are governed by subscription tier quotas (see below).
+
+## Subscription quota enforcement
+
+All quota-gated operations pass through `subscriptionValidator.js` before executing:
+
+```javascript
+const { allowed, reason } = await canPerform(userId, operationType, directusClient);
+if (!allowed) return res.status(403).json({ error: 'tier_limit_reached', reason });
+```
+
+`canPerform()` reads the user's current usage from the `user_usage_counts` Directus collection and compares it against the limits defined in `config/tier_rate_limits.json`. The validator is **fail-closed**: if anything goes wrong reading quota data — network error, missing collection, unexpected exception — the function returns `{ allowed: false, reason: 'quota_check_failed' }` rather than letting the request through.
+
+<Warning>
+  Quota enforcement is fail-closed by design. If `subscriptionValidator.js` cannot reach Directus, the request is denied. Ensure `MCP_SERVICE_TOKEN` is valid and Directus is reachable.
+</Warning>
+
+### Tier limits at a glance
+
+| Feature | Starter | Creator | Pro | Studio |
+|---------|---------|---------|-----|--------|
+| Caption generation | 3/mo | 50/mo | 200/mo | Unlimited |
+| Taxonomy AI calls | 10/mo | 100/mo | 500/mo | Unlimited |
+| AI media operations | 5/mo | 30/mo | 150/mo | Unlimited |
+
+Limits are sourced from `config/tier_rate_limits.json`. Usage resets at the start of each billing cycle.
+
+## Error responses
+
+All endpoints return JSON error responses in the following format:
+
+```json
+{
+  "error": "Human-readable error message",
+  "reason": "machine_readable_code"
+}
+```
+
+| HTTP status | Meaning |
+|-------------|--------|
+| `400` | Missing or invalid request body parameters |
+| `401` | Missing, expired, or invalid Directus JWT |
+| `403` | Valid token but insufficient permissions or tier quota exhausted |
+| `404` | Requested resource not found |
+| `429` | Rate limit exceeded (registration endpoint only) |
+| `500` | Unexpected server error |
+| `503` | Account setup incomplete (e.g., missing AnythingLLM workspace) |
+
+<CardGroup cols={2}>
+  <Card title="Stream Chat" icon="message-bot" href="/developer/api/chat">
+    POST /api/genie/stream-chat — SSE streaming, Node RAG, ACTION interception
+  </Card>
+  <Card title="Job Queue" icon="list-ordered" href="/developer/api/queue">
+    POST/GET /api/queue — BullMQ job enqueue and status polling
+  </Card>
+  <Card title="Credentials" icon="lock" href="/developer/api/credentials">
+    POST /api/credentials — AES-256-GCM encrypted platform credential storage
+  </Card>
+  <Card title="Skills" icon="brain" href="/developer/api/skills">
+    GET/POST /api/skills — skill discovery and stimulus propagation
+  </Card>
+  <Card title="Usage" icon="chart-bar" href="/developer/api/usage">
+    GET /api/usage — subscription quota status for the current billing cycle
+  </Card>
+</CardGroup>

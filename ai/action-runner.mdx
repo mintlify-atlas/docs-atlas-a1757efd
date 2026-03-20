@@ -1,0 +1,409 @@
+---
+title: Action Runner
+description: How GenieHelper gets reliable automation out of 7B models — the ACTION tag interception pattern that bypasses LLM tool-calling limitations with a deterministic 14-step execution layer.
+---
+
+The Action Runner is the bridge between what a 7B language model can reliably produce and what a production automation system actually needs. This page explains why it exists, how it works end-to-end, and what each of its 14 step types does.
+
+## Why it exists
+
+<Info>
+  Qwen 2.5 7B and Dolphin 3 8B cannot reliably produce the structured JSON function-call format that AnythingLLM's native tool-calling pipeline expects. Under load, the formatting breaks. Tool calls get dropped. JSON is malformed.
+</Info>
+
+Rather than fight the model's limitations, GenieHelper routes around them. Instead of asking the model to call a tool directly, the system asks it to emit a plain-text ACTION tag:
+
+```
+[ACTION:scrape-profile:{"platform":"onlyfans","user_id":"123"}]
+```
+
+This is something 7B models do reliably — append a structured string to a response. The Action Runner intercepts that string, parses it, fetches the corresponding flow definition from the `action_flows` Directus collection, and executes the steps deterministically without involving the LLM again.
+
+**Result:** Reliable automation from an uncensored 7B model with no cloud dependency.
+
+## Architecture
+
+```
+Agent response stream
+    │
+    ├── Plain text (sent to user)
+    │
+    └── [ACTION:slug:{"params"}] ──► Action Runner interceptor
+                                          │
+                                          ▼
+                                 Fetch flow from action_flows
+                                 (Directus collection)
+                                          │
+                                          ▼
+                                 Execute steps sequentially
+                                 (14 step types, 120s timeout each)
+                                          │
+                                          ▼
+                                 Return { success, results }
+                                 to genieChat SSE stream
+```
+
+Source: `server/utils/actionRunner/index.js` · `server/utils/actionRunner/stepExecutors.js`
+
+The action bus integration lives in `server/utils/actionBus/` and handles the BullMQ enqueue side.
+
+## ACTION tag format
+
+The format is rigid and parseable by a simple regex — no LLM is involved in parsing:
+
+```
+[ACTION:<slug>:<json-params>]
+```
+
+| Part | Description |
+|---|---|
+| `slug` | Unique identifier of a flow in the `action_flows` Directus collection |
+| `json-params` | JSON object — the input parameters passed to the flow's first step |
+
+### Examples
+
+```text
+[ACTION:scrape-profile:{"platform":"onlyfans","user_id":"123"}]
+
+[ACTION:taxonomy-tag:{"content_id":"abc-456","text":"beach yoga selfie"}]
+
+[ACTION:post-create:{"draft_id":"789","platform":"fansly","scheduled_at":"2026-03-21T14:00:00Z"}]
+
+[ACTION:message-generate:{"fan_id":"fan-001","context":"subscriber renewal"}]
+
+[ACTION:media-process:{"file_id":"media-999","operation":"watermark"}]
+
+[ACTION:memory-recall:{"task":"scrape onlyfans stats","top_n":6}]
+```
+
+## Flow definitions — the action_flows collection
+
+Flows are stored as records in the `action_flows` Directus collection. Each record contains:
+
+| Field | Type | Description |
+|---|---|---|
+| `slug` | string (unique) | The identifier used in ACTION tags |
+| `name` | string | Human-readable label for status messages |
+| `active` | boolean | Disabled flows are rejected immediately |
+| `steps` | JSON array | Ordered list of step definitions |
+
+Each step in the `steps` array has:
+
+```json
+{
+  "type": "directus_read",
+  "result_key": "profile",
+  "config": {
+    "collection": "creator_profiles",
+    "filter": { "id": { "_eq": "$input.creator_profile_id" }
+    }
+  }
+}
+```
+
+The `result_key` value becomes available to subsequent steps as `$result_key.field_name`.
+
+### Seeded flows
+
+The following flows are seeded in the `action_flows` collection at install time:
+
+| Slug | Purpose |
+|---|---|
+| `scout-analyze` | Analyse a creator's platform presence and surface insights |
+| `taxonomy-tag` | Run LLM-assisted taxonomy tagging on a piece of content |
+| `post-create` | Create and optionally schedule a content post |
+| `message-generate` | Draft a fan message using the creator's persona |
+| `memory-recall` | Activate relevant skills via JIT hydration |
+| `media-process` | Enqueue a media job (watermark, clip, thumbnail) |
+
+## The 14 step types
+
+Step executors live in `server/utils/actionRunner/stepExecutors.js`. Each executor receives a `config` object (with interpolated variables) and an `AbortSignal` for the 120-second timeout.
+
+<AccordionGroup>
+  <Accordion title="directus_read — fetch items from Directus">
+    Reads one or many items from a Directus collection.
+
+    ```json
+    {
+      "type": "directus_read",
+      "config": {
+        "collection": "creator_profiles",
+        "filter": { "id": { "_eq": "$input.creator_id" } },
+        "fields": "id,display_name,platform_connections",
+        "limit": 1
+      }
+    }
+    ```
+
+    Supports both single-item (`id` param) and list queries with filter, sort, fields, and limit.
+  </Accordion>
+
+  <Accordion title="directus_write — create a new item">
+    Creates a new record in a Directus collection.
+
+    ```json
+    {
+      "type": "directus_write",
+      "config": {
+        "collection": "media_jobs",
+        "item": {
+          "operation": "apply_watermark",
+          "file_id": "$input.file_id",
+          "status": "queued"
+        }
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="directus_update — PATCH an existing item">
+    Updates a single item by ID.
+
+    ```json
+    {
+      "type": "directus_update",
+      "config": {
+        "collection": "media_jobs",
+        "id": "$job.id",
+        "item": { "status": "processing" }
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="directus_delete — remove an item">
+    Deletes a single item from a collection.
+
+    ```json
+    {
+      "type": "directus_delete",
+      "config": {
+        "collection": "hitl_sessions",
+        "id": "$input.session_id"
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="directus_search — full-text search">
+    Full-text search across a collection with optional field projection and limit.
+
+    ```json
+    {
+      "type": "directus_search",
+      "config": {
+        "collection": "fan_profiles",
+        "query": "$input.query",
+        "fields": "id,display_name,platform",
+        "limit": 10
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="directus_trigger — fire a Directus Flow by UUID">
+    Triggers a Directus webhook flow. Note: the Directus `request` operation is known-broken (returns `{}`). This step triggers flows via their webhook endpoint instead.
+
+    ```json
+    {
+      "type": "directus_trigger",
+      "config": {
+        "flow_uuid": "7506f825-...",
+        "payload": { "content_id": "$input.content_id" }
+      }
+    }
+    ```
+
+    Known flow UUIDs: `591a8845` (memory-sync) · `7506f825` (taxonomy-tag) · `50a4dc14` (post-create) · `a4f083fa` (message-generate).
+  </Accordion>
+
+  <Accordion title="stagehand_start — launch a browser session">
+    Starts a headless Playwright session via the Stagehand server and returns a `sessionId`.
+
+    ```json
+    {
+      "type": "stagehand_start",
+      "result_key": "browser",
+      "config": {}
+    }
+    ```
+
+    All subsequent Stagehand steps require `$browser.sessionId`.
+  </Accordion>
+
+  <Accordion title="stagehand_navigate — go to a URL">
+    Navigates the browser session to a URL.
+
+    ```json
+    {
+      "type": "stagehand_navigate",
+      "config": {
+        "sessionId": "$browser.sessionId",
+        "url": "https://onlyfans.com/my-creator-handle"
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="stagehand_act — natural language browser action">
+    Executes a natural language action against the current page (click, type, scroll, select).
+
+    ```json
+    {
+      "type": "stagehand_act",
+      "config": {
+        "sessionId": "$browser.sessionId",
+        "action": "click the Stats tab"
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="stagehand_extract — extract structured data">
+    Extracts structured data from the current page using a natural language instruction and optional JSON schema.
+
+    ```json
+    {
+      "type": "stagehand_extract",
+      "result_key": "stats",
+      "config": {
+        "sessionId": "$browser.sessionId",
+        "instruction": "Extract subscriber count, total earnings, and post count",
+        "schema": {
+          "subscribers": "number",
+          "total_earnings": "string",
+          "post_count": "number"
+        }
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="stagehand_close — end the browser session">
+    Closes and cleans up a Stagehand browser session.
+
+    ```json
+    {
+      "type": "stagehand_close",
+      "config": { "sessionId": "$browser.sessionId" }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="ollama_generate — single-turn LLM completion">
+    Runs a single-turn prompt through Ollama. Used for sub-tasks within a flow that need LLM output without a full agent session.
+
+    ```json
+    {
+      "type": "ollama_generate",
+      "result_key": "caption",
+      "config": {
+        "model": "dolphin-mistral:7b",
+        "system": "Write in the creator's voice. Style: playful. No hashtags.",
+        "prompt": "Write a caption for a beach selfie. Stats: $stats"
+      }
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="bullmq_enqueue — push a job to BullMQ">
+    Enqueues a job to the `media-jobs` BullMQ queue. The media-worker consumer picks it up and executes FFmpeg, ImageMagick, or Stagehand operations.
+
+    ```json
+    {
+      "type": "bullmq_enqueue",
+      "config": {
+        "queue": "media-jobs",
+        "job": {
+          "type": "apply_watermark",
+          "file_id": "$input.file_id",
+          "creator_profile_id": "$input.creator_id"
+        }
+      }
+    }
+    ```
+
+    The executor returns `{ queued: true, bullId, jobId }`. Use `media.job-status` via MCP to poll completion.
+  </Accordion>
+
+  <Accordion title="http_request — generic HTTP call">
+    Makes an arbitrary HTTP request. Used for webhooks, internal API calls, and third-party integrations not covered by the other step types.
+
+    ```json
+    {
+      "type": "http_request",
+      "config": {
+        "url": "http://127.0.0.1:3001/api/some-internal-endpoint",
+        "method": "POST",
+        "body": { "user_id": "$context.user_id" }
+      }
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Variable interpolation
+
+Step configs support variable substitution using `$` prefixes. Interpolation is resolved at execution time, just before each step runs.
+
+| Variable syntax | Resolves to |
+|---|---|
+| `$input.field` | A field from the ACTION tag's JSON params |
+| `$steps[N].field` | The result of step N (zero-indexed) |
+| `$result_key.field` | The named result of a previous step |
+| `$context.field` | Extra context injected by genieChat (user info, workspace) |
+
+```json
+// Step 1 result_key = "profile"
+// Step 2 can reference it as:
+{ "creator_id": "$profile.id" }
+```
+
+## End-to-end example: "scrape my OnlyFans stats"
+
+A creator sends this message in the chat interface. Here is what happens:
+
+<Steps>
+  <Step title="Agent emits ACTION tag">
+    The Dolphin 3 8B orchestrator model processes the request and appends an ACTION tag to its response:
+
+    ```text
+    I'll scrape your OnlyFans stats now.
+
+    [ACTION:scrape-profile:{"platform":"onlyfans","creator_profile_id":"cp-123"}]
+    ```
+  </Step>
+  <Step title="genieChat intercepts the tag">
+    The streaming response is scanned for the `[ACTION:...]` pattern. When found, the tag is extracted and passed to `ActionFlowExecutor.run("scrape-profile", { platform: "onlyfans", creator_profile_id: "cp-123" })`.
+  </Step>
+  <Step title="Flow definition fetched from Directus">
+    The executor queries `action_flows` for `slug = "scrape-profile"`. It retrieves a 5-step flow definition: read credentials → start browser → inject cookies → navigate → extract stats.
+  </Step>
+  <Step title="Steps execute sequentially">
+    Each step runs with a 120-second timeout:
+
+    1. `directus_read` — fetches the `platform_sessions` record for this creator
+    2. `stagehand_start` — launches a headless browser, returns `sessionId`
+    3. `stagehand_navigate` — navigates to `https://onlyfans.com/my-handle/stats`
+    4. `stagehand_extract` — extracts subscriber count, earnings, post count as JSON
+    5. `directus_write` — writes extracted stats to `platform_stats_snapshots`
+  </Step>
+  <Step title="BullMQ job enqueued">
+    A final `bullmq_enqueue` step creates a `scrape_post_performance` job so individual post metrics are fetched asynchronously without blocking the chat response.
+  </Step>
+  <Step title="SSE stream updates the UI">
+    As each step completes, `onStatus` callbacks emit SSE events that update the TopCueRail mission label and open the `live-scrape-feed` panel in the Right Wing automatically.
+  </Step>
+</Steps>
+
+## Error handling
+
+- Each step has a 120-second hard timeout enforced via `AbortController`.
+- If any step fails, the executor returns `{ success: false, failedStep: N, error: "..." }` immediately — subsequent steps do not run.
+- Timeout and failure messages are surfaced via `onStatus` to the SSE stream, so the creator sees a meaningful error rather than a stalled spinner.
+- Disabled flows (`active: false`) are rejected before any steps run.
+
+<Warning>
+  The Action Runner authenticates to Directus using the admin credentials in `DIRECTUS_EMAIL` / `DIRECTUS_PASSWORD`. These are not the creator's credentials. The `user_id` context injected by `genieChat.js` must come from the validated session — never from the LLM's output.
+</Warning>

@@ -1,0 +1,177 @@
+---
+title: "Pricing"
+description: "Four subscription tiers on a single dedicated server. No cloud tax, no per-seat fees, no data harvesting."
+---
+
+GenieHelper runs on infrastructure you subscribe to — not infrastructure owned by a platform with competing interests. One IONOS dedicated server, one price, all your data stays local.
+
+<Info>
+  **Infrastructure:** IONOS dedicated server · Ubuntu 24 · 16GB RAM · 1TB NVMe SSD · Self-hosted. No cloud vendor. No managed database. No CDN that scans your content.
+</Info>
+
+---
+
+## Subscription tiers
+
+<CardGroup cols={2}>
+  <Card title="Starter" icon="seedling">
+    **$0 / month**
+
+    Try the platform before committing. Starter gives you access to the core AI chat, basic content scheduling, and a single platform connection so you can see how GenieHelper works with your real data.
+
+    Best for: creators evaluating whether self-hosted AI tooling fits their workflow.
+  </Card>
+  <Card title="Creator" icon="user">
+    **$49 / month**
+
+    The full solo creator stack. Multi-platform connections, AI caption and message drafting, post scheduling, fan CRM, and the media pipeline. Everything a working creator needs to replace ad-hoc tools with one intelligent system.
+
+    Best for: solo creators managing one or two platforms who want to stop doing repetitive fan engagement manually.
+  </Card>
+  <Card title="Pro" icon="bolt">
+    **$149 / month**
+
+    Everything in Creator, plus the advanced fan CRM layer with all 71 engagement fields — purchase history, message sentiment, churn risk scoring, predicted LTV, upsell readiness, loyalty score, and dynamic audience segments. Pro also unlocks automation rules (trigger → condition → action chains) and per-fan voice personas.
+
+    Best for: high-volume creators who treat their fan base as a managed relationship, not just a subscriber count.
+  </Card>
+  <Card title="Studio" icon="building">
+    **$499 / month**
+
+    Multi-account agency operations. Full access to every feature across multiple creator profiles, admin impersonation, team management, and the complete automation suite. Studio is designed for agencies managing several creators on a single server instance.
+
+    Best for: agencies, management companies, or creators with multiple accounts who need centralized control.
+  </Card>
+</CardGroup>
+
+---
+
+## Feature comparison
+
+| Feature | Starter | Creator | Pro | Studio |
+|---------|:-------:|:-------:|:---:|:------:|
+| **AI chat (local Ollama models)** | ✓ | ✓ | ✓ | ✓ |
+| **Creator persona system** | ✓ | ✓ | ✓ | ✓ |
+| **Content boundaries & monetization profiles** | ✓ | ✓ | ✓ | ✓ |
+| **Platform connections** | 1 | Multi | Multi | Multi |
+| **Supported platforms** | 1 of 4 | All 4 | All 4 | All 4 |
+| **AI caption & message drafting** | Limited | ✓ | ✓ | ✓ |
+| **Post scheduling queue** | Limited | ✓ | ✓ | ✓ |
+| **Fan CRM (basic)** | — | ✓ | ✓ | ✓ |
+| **Fan CRM (advanced — 71 fields)** | — | — | ✓ | ✓ |
+| **Fan memory injection** | — | ✓ | ✓ | ✓ |
+| **Per-fan voice personas** | — | — | ✓ | ✓ |
+| **Automation rules** | — | — | ✓ | ✓ |
+| **Dynamic audience segments** | — | — | ✓ | ✓ |
+| **Media pipeline** | — | ✓ | ✓ | ✓ |
+| **Watermarking & steganographic leak tracing** | — | ✓ | ✓ | ✓ |
+| **Custom content request tracking** | — | ✓ | ✓ | ✓ |
+| **Campaign management & ROI tracking** | — | — | ✓ | ✓ |
+| **HITL approval queue** | ✓ | ✓ | ✓ | ✓ |
+| **Multi-account / agency operations** | — | — | — | ✓ |
+| **Admin impersonation** | — | — | — | ✓ |
+
+<Note>
+  Tier enforcement is fail-closed. If a quota check fails (network error, service unavailable), the operation is blocked rather than allowed through. Your usage counts are tracked per billing cycle in real time.
+</Note>
+
+---
+
+## Tier highlights
+
+### Starter — Free
+
+Starter is a genuine trial tier, not a crippled version designed to frustrate you into upgrading. You get the AI chat backed by local Ollama models (Dolphin 3 8B + Qwen 2.5), the creator persona setup, and enough scheduling capacity to understand how the queue works.
+
+What Starter doesn't include: multi-platform connections, the fan CRM, the media pipeline, or automation rules. If those matter to your workflow — and they will — Creator is the right starting point.
+
+---
+
+### Creator — $49/mo
+
+Creator unlocks the full operational stack for a solo creator:
+
+- **Multi-platform connections** across OnlyFans, Fansly, Instagram, and TikTok. Stats scrape automatically; fan profiles are created and linked across platforms.
+- **AI drafting** for captions, fan messages, and post concepts — written in your voice using the persona you define during onboarding.
+- **Post scheduling queue** with AI-suggested timing and BullMQ-backed reliability. Posts don't drop.
+- **Fan CRM** — per-fan profiles with subscription lifecycle events, purchase history, durable fan memories (preferences, anniversaries, past conversation facts), and automatic fan scoring.
+- **Media pipeline** — watermarking, teaser clipping, thumbnail generation, and metadata sanitization via local FFmpeg. Nothing goes to an external service.
+- **Steganographic leak tracing** — every piece of purchased media gets a fan-specific invisible watermark at delivery time. If a file leaks, the watermark identifies exactly which fan's purchase it came from.
+
+---
+
+### Pro — $149/mo
+
+Pro is for creators who manage their fan base as a business with real CRM discipline.
+
+The key unlock is **advanced fan CRM access**: all 71 engagement fields including churn risk score, predicted lifetime value, upsell readiness score, loyalty score, message sentiment history, and dynamic audience segments. These fields are gated at the Directus policy layer — Pro and Studio accounts get the `Pro Policy` which extends row-level access to the full CRM schema.
+
+Pro also adds:
+
+- **Automation rules** — trigger → condition → action chains that fire on fan behavior. Win-back messages when a fan cancels. Upsell prompts after a PPV purchase. Birthday greetings. Re-engagement sequences for inactive fans. Every rule is auditable and pausable.
+- **Per-fan voice personas** — assign a distinct AI writing persona to individual fans. The agent uses different vocabulary, tone, and response style depending on who it's writing for. Fan A gets warm and casual. Fan B gets formal and brief. The AI stays in character.
+- **Campaign management** — track actual vs planned revenue, per-platform attribution, and ROI windows for campaigns.
+- **Dynamic audience segments** — build audiences from behavior, score, spend, or lifecycle stage and use them as targets for broadcasts or automation rules.
+
+<Tip>
+  If you're generating meaningful revenue from fan messaging, Pro pays for itself quickly. The automation rules alone can eliminate hours of repetitive outreach work per week.
+</Tip>
+
+---
+
+### Studio — $499/mo
+
+Studio is built for agencies and creators running multiple accounts.
+
+Everything in Pro, plus:
+
+- **Multi-account operations** — manage multiple creator profiles from a single dashboard. Each creator gets their own isolated workspace and data layer; the Studio account holder can navigate between them.
+- **Admin impersonation** — Studio accounts (and platform admins) can impersonate any creator account for support and management without sharing credentials.
+- **Full automation suite** — no limits on automation rule count or broadcast audience size.
+
+<Warning>
+  Studio account management (adding sub-accounts, configuring agency permissions) requires coordination with the GenieHelper team during the current beta period. Contact support to provision additional creator slots under your Studio subscription.
+</Warning>
+
+---
+
+## Infrastructure details
+
+GenieHelper is not a SaaS platform. There is no multi-tenant cloud database. Your subscription grants access to a dedicated server running all services locally.
+
+| Component | Specification |
+|-----------|--------------|
+| **Host** | IONOS dedicated server |
+| **OS** | Ubuntu 24 |
+| **RAM** | 16GB |
+| **Storage** | 1TB NVMe SSD |
+| **Database** | PostgreSQL 16 with pgvector, AGE graph extension, supabase_vault |
+| **AI inference** | Ollama — Dolphin 3 8B (Llama 3.1) + Qwen 2.5, CPU-bound, ~4.8GB pinned |
+| **Job queue** | BullMQ + Redis, concurrency:1 (prevents RAM exhaustion) |
+| **Browser automation** | Stagehand (Playwright), port 3002 |
+| **Credential encryption** | AES-256-GCM, per-user, stored in PostgreSQL vault |
+
+All inference runs locally. No requests leave the server to OpenAI, Anthropic, or any third-party LLM API. The `poweradmin` account is the sole exception — it routes to the Anthropic Claude API for internal tooling.
+
+<Info>
+  The 16GB RAM ceiling is a hard constraint, not a soft limit. BullMQ is set to `concurrency:1` across all queues to prevent job overlap from exhausting memory during simultaneous scrape + media processing operations.
+</Info>
+
+---
+
+## Frequently asked questions
+
+**Can I upgrade or downgrade my tier?**
+Yes. Tier changes take effect immediately. Every change is logged in the `subscription_events` append-only audit ledger on your account.
+
+**What happens to my data if I cancel?**
+Your data remains on the server until you request deletion. GenieHelper does not feed your content, fan data, or AI interactions into any training set or shared model.
+
+**Is the AI really uncensored?**
+The local Ollama models (Dolphin 3 8B, Qwen 2.5) run without corporate content moderation policies. They operate under your persona and content boundaries configuration, not platform-imposed filters.
+
+**What platforms can I connect?**
+OnlyFans, Fansly, Instagram, and TikTok are supported today. Reddit and X connections are in the roadmap.
+
+**Is my data shared between creators?**
+No. Row-level security on every collection enforces `user_id = $CURRENT_USER` isolation. The only shared layer is the universal taxonomy graph, which contains no creator-specific data.

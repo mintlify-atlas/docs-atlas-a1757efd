@@ -1,0 +1,131 @@
+---
+title: web.stagehand
+description: 9-tool plugin for browser automation via Playwright/Stagehand — stateful sessions, navigation, natural-language actions, data extraction, cookie injection, and screenshots.
+---
+
+**Plugin ID:** `web.stagehand` | **Version:** 1.1.0 | **Tools:** 9
+
+The `web.stagehand` plugin exposes a full Playwright-backed browser as MCP tools. Stagehand runs on port 3002 and is managed as a PM2 process (`stagehand-server`). The plugin is the primary mechanism for scraping platform statistics, performing HITL-assisted logins, and extracting fan data from platforms that block headless clients.
+
+## Session lifecycle
+
+All tools except `start-session` require a `session_id`. Sessions are stateful: cookies, DOM state, and navigation history persist within a session until `close-session` is called.
+
+```
+start-session → returns session_id
+  ├─ navigate(session_id, url)
+  ├─ act(session_id, instruction)
+  ├─ extract(session_id, instruction)
+  ├─ observe(session_id)
+  ├─ screenshot(session_id)
+  ├─ get-cookies(session_id)
+  ├─ set-cookies(session_id, cookies)
+  └─ close-session(session_id)   ← always call this when done
+```
+
+<Warning>
+Session cleanup is the caller's responsibility. Always call `close-session` when a browser task is complete. Leaked sessions consume server RAM and Playwright browser processes.
+</Warning>
+
+## Tools
+
+### `start-session` — launch a browser
+
+Launches a new Playwright browser instance on the Stagehand server. Returns a `session_id` that must be passed to all subsequent tool calls in this session.
+
+Browser launches with:
+- `--no-sandbox` (required for Docker/non-root)
+- `--disable-blink-features=AutomationControlled` (reduces bot detection)
+- 1920×1080 viewport
+
+### `navigate` — go to a URL
+
+Navigates the browser to a URL and waits for the page to reach a stable state. Returns the final URL (post-redirect) and page title.
+
+### `act` — natural language browser action
+
+Performs a natural-language browser action using Stagehand's AI-driven interaction layer. The model interprets the instruction and maps it to concrete Playwright actions (click, type, scroll, select, etc.).
+
+```
+act(session_id, "Click the Sign In button")
+act(session_id, "Type my_creator_handle into the username field")
+act(session_id, "Scroll down to the analytics section")
+```
+
+The default model for action interpretation is set by `STAGEHAND_MODEL` (default: `ollama/qwen-2.5`).
+
+### `extract` — structured data from page
+
+Extracts structured data from the current page based on a natural-language instruction and an optional JSON schema. Returns a typed object.
+
+```
+extract(session_id, "Get the total subscriber count and monthly earnings", {
+  subscribers: "number",
+  earnings: "string"
+})
+```
+
+### `observe` — analyze interactive elements
+
+Returns a list of interactive elements currently visible on the page — buttons, inputs, links, and their bounding boxes. Use this before `act` when the correct action target is ambiguous.
+
+### `screenshot` — capture current page
+
+Takes a full-page screenshot of the current session state. Returns a base64-encoded PNG. Useful for debugging stuck sessions or documenting the state at HITL escalation points.
+
+### `get-cookies` / `set-cookies` — session rehydration
+
+`get-cookies` retrieves all cookies from the current session. `set-cookies` injects a cookie array into the session, bypassing the login flow entirely.
+
+This pair is the primary mechanism for **platform session rehydration**: encrypted cookie blobs stored in the `platform_sessions` Directus collection are decrypted by the server and injected via `set-cookies` before navigating to a platform. The agent lands in an already-authenticated state without replaying the login form.
+
+### `close-session` — terminate and clean up
+
+Ends a browser session and releases all associated resources (Playwright browser, page, network interceptors). Should always be the final call in any browser task.
+
+## Use cases
+
+<CardGroup cols={2}>
+  <Card title="Scraping platform stats" icon="chart-bar">
+    Navigate to OnlyFans or Fansly analytics pages, extract subscriber counts, earnings, and post performance metrics. Store results in `scraped_media` or `creator_profiles` via `cms.directus` tools.
+  </Card>
+  <Card title="HITL login flows" icon="user">
+    When a platform blocks headless Chrome or requires 2FA, the agent escalates to HITL mode: session is paused, a `hitl_sessions` record is created, and the human creator completes the login manually. Once confirmed, the agent calls `get-cookies` to capture the authenticated session and stores it encrypted in `platform_sessions`.
+  </Card>
+  <Card title="Fan data extraction" icon="users">
+    Extract fan profile data, tip history, and message threads from platform pages. Structure the output with `extract` and store via `cms.directus` tools.
+  </Card>
+  <Card title="Post verification" icon="check-circle">
+    After a `publish_post` BullMQ job completes, navigate to the post URL and verify it is live, correctly captioned, and properly priced.
+  </Card>
+</CardGroup>
+
+## HITL escalation flow
+
+When a platform actively blocks headless Chrome (Cloudflare bot detection, device fingerprint challenges, SMS 2FA), the agent switches to `scrape_alert` mode:
+
+```
+1. Agent calls start-session → navigate to platform login
+2. Platform detects headless Chrome → challenge page
+3. Agent calls screenshot → records challenge state
+4. Agent creates hitl_sessions record via cms.directus create-item
+5. Dashboard notifies creator via SSE (scrape_alert event)
+6. Creator opens headed browser session (or takes over)
+7. Creator completes login → confirms via dashboard
+8. Agent calls get-cookies → encrypts → stores in platform_sessions
+9. Future sessions: set-cookies → navigate directly to authenticated state
+```
+
+<Tip>
+Use `set-cookies` to inject cookies at the start of every scrape session, not just after HITL flows. Platform sessions expire, but Stagehand's cookie injection is fast and avoids replaying the full login form on every run.
+</Tip>
+
+## Configuration
+
+| Setting | Value |
+|---|---|
+| Stagehand URL | `http://127.0.0.1:3002` (configurable via `STAGEHAND_URL`) |
+| Model | `STAGEHAND_MODEL` env (default: `ollama/qwen-2.5`) |
+| Timeout | 60,000 ms |
+| Concurrency | 3 simultaneous sessions |
+| Viewport | 1920×1080 |

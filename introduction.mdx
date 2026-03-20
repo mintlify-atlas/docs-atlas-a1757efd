@@ -1,0 +1,114 @@
+---
+title: "GenieHelper"
+description: "The AI business manager for adult content creators — running on your server, not theirs."
+---
+
+<img
+  className="block"
+  src="https://placehold.co/1200x400/4C1D95/A78BFA?text=GenieHelper&font=montserrat"
+  alt="GenieHelper — AI business manager for content creators"
+/>
+
+## Your platform. Your data. Your AI.
+
+The creator economy is a $250 billion market. Big Tech takes 20% — then taxes the data, then sells it back. Every OnlyFans payout, every Fansly subscriber, every fan message is processed by infrastructure that has no skin in your game and every incentive to harvest what you build.
+
+**GenieHelper flips the stack.**
+
+Your data stays on a server you subscribe to. Your AI runs on models we host — uncensored, unfiltered, ungoverned by corporate content policy. Your fan relationships, your content performance, your posting schedule, your platform credentials — encrypted at rest, never leaving our infrastructure, never feeding someone else's training set.
+
+<CardGroup cols={2}>
+  <Card title="Quick Start" icon="rocket" href="/quickstart">
+    Set up your account and connect your first platform in minutes
+  </Card>
+  <Card title="Platform Overview" icon="layout-dashboard" href="/platform/overview">
+    Explore all features: fan CRM, content scheduling, media pipeline, analytics
+  </Card>
+  <Card title="AI & Memory System" icon="brain" href="/ai/overview">
+    Learn how GenieHelper's private AI and memory stack works
+  </Card>
+  <Card title="Pricing & Tiers" icon="credit-card" href="/pricing">
+    Starter, Creator, Pro, and Studio plans — from $0 to $499/mo
+  </Card>
+</CardGroup>
+
+## What GenieHelper does
+
+<CardGroup cols={2}>
+  <Card title="Multi-Platform Management" icon="globe">
+    Connect OnlyFans, Fansly, Instagram, and TikTok from one interface. Scrape stats, track engagement, and manage sessions without switching tabs.
+  </Card>
+  <Card title="Private AI Chat" icon="message-bot">
+    Dolphin 3 8B and Qwen 2.5 run locally — zero OpenAI dependency. Your conversations, your models, your server.
+  </Card>
+  <Card title="Fan Intelligence CRM" icon="users">
+    Per-fan profiles with 71 engagement fields, purchase history, message sentiment, and AI-suggested follow-up tasks.
+  </Card>
+  <Card title="AI Content Drafting" icon="pen-line">
+    Uncensored Ollama models write captions, fan messages, and post concepts in your voice — trained on your persona, not a generic template.
+  </Card>
+  <Card title="Post Scheduling" icon="calendar">
+    AI-suggested editorial calendar with tier-enforced queue limits and BullMQ-powered reliability.
+  </Card>
+  <Card title="Media Pipeline" icon="film">
+    Watermarking, teaser clipping, thumbnail generation, and metadata stripping — all local FFmpeg, no cloud uploads.
+  </Card>
+  <Card title="Steganographic Watermarking" icon="fingerprint">
+    Every piece of purchased media gets an invisible, fan-specific watermark. If a file leaks, you know exactly which fan's purchase it came from.
+  </Card>
+  <Card title="Automation Triggers" icon="zap">
+    Rule-based automation chains fire on fan behavior: win-back on cancel, upsell after PPV, birthday greetings, re-engagement for inactive fans.
+  </Card>
+</CardGroup>
+
+## Infrastructure philosophy
+
+GenieHelper is not a SaaS play built on managed cloud services. It runs on a dedicated server you subscribe to — IONOS dedicated, Ubuntu 24, 16GB RAM, 1TB NVMe, fully self-hosted.
+
+<Info>
+  **No cloud. No vendor lock-in. No corporate content moderation.** All AI inference runs locally via Ollama. Nothing leaves the VPS.
+</Info>
+
+| Layer | Technology |
+|---|---|
+| LLM inference | Ollama — Dolphin3 8B, dolphin-mistral 7B, Qwen 2.5 |
+| Agent orchestration | AnythingLLM (fork) — multi-user, MCP auto-boot |
+| API server | Express + Prisma (port 3001) |
+| CMS / data layer | Directus 11 (port 8055) |
+| Primary database | PostgreSQL 16 with pgvector + AGE graph extension |
+| Job queue | BullMQ + Redis (concurrency:1) |
+| Browser automation | Stagehand (Playwright, port 3002) |
+| Frontend | React 18 + Vite + Tailwind (port 3100) |
+| Credential encryption | AES-256-GCM per-user vault |
+
+## Subscription tiers
+
+| Tier | Price | Audience |
+|---|---|---|
+| Starter | $0/mo | Try the platform |
+| Creator | $49/mo | Solo content creators |
+| Pro | $149/mo | Power users with advanced fan CRM |
+| Studio | $499/mo | Agencies and multi-account operations |
+
+<Tip>
+  Start with the free Starter tier to explore the platform before committing to a paid plan.
+</Tip>
+
+## For developers
+
+GenieHelper is built on open-source primitives: AnythingLLM, Directus, Ollama, Playwright, BullMQ, DuckDB, and PostgreSQL with pgvector and AGE. The interesting engineering is in the agent intelligence layer — specifically how the system builds, retrieves, and promotes knowledge over time.
+
+<CardGroup cols={2}>
+  <Card title="System Architecture" icon="diagram-project" href="/developer/architecture">
+    Web architecture, data flow, and middleware stack diagrams
+  </Card>
+  <Card title="MCP Tools" icon="tool" href="/developer/mcp/overview">
+    83 tools across 6 plugins: cms.directus, ai.ollama, web.stagehand, and more
+  </Card>
+  <Card title="Memory & Retrieval" icon="database" href="/memory/overview">
+    HyDE, RRF, synaptic propagation, Shannon entropy gating, Hebbian consolidation
+  </Card>
+  <Card title="API Reference" icon="code" href="/developer/api/overview">
+    REST endpoints for chat, queue management, credentials, and skills
+  </Card>
+</CardGroup>

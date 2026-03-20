@@ -1,0 +1,142 @@
+---
+title: 'Instagram'
+description: 'Connect your Instagram account to GenieHelper for follower tracking, engagement analytics, and automated post scheduling.'
+---
+
+GenieHelper connects to Instagram through Stagehand — a Playwright-based browser automation layer running on your dedicated server. Instagram does not provide a public API for creator analytics that is freely accessible, so GenieHelper reads data directly from the authenticated web interface.
+
+<Note>
+  All Instagram credentials and session cookies are encrypted with AES-256-GCM before being written to PostgreSQL. The encryption key (`CREDENTIALS_ENC_KEY_B64`) is server-side only and is never transmitted to any external service.
+</Note>
+
+## How the connection works
+
+Stagehand launches a real Chromium browser on the server, navigates to your Instagram profile, and extracts follower counts, engagement metrics, and post performance data from the page DOM. For publishing, Stagehand fills in the post compose interface and submits.
+
+Instagram's bot detection is among the most aggressive of any major platform. The integration mitigates this by using realistic Chrome fingerprints and injecting existing session cookies whenever available — but HITL escalation is more frequent with Instagram than with adult content platforms.
+
+<Warning>
+  Instagram actively blocks headless Chrome and will trigger login challenges, checkpoint screens, or account locks if it detects automation. GenieHelper escalates to the **HITL queue** (`hitl_action_queue`) when a challenge is encountered. You must resolve it manually and provide fresh session cookies to resume automated operations. Excessive automation attempts can result in temporary or permanent account restrictions.
+</Warning>
+
+## Authentication
+
+Instagram only supports email/password login in the connect flow. X/Twitter OAuth is not available for Instagram.
+
+- **Email / Password**: GenieHelper logs in with your Instagram email and password, then stores the resulting session cookies in `platform_sessions`.
+- **Cookie only**: No password is stored. You log in manually in your browser, export session cookies via the GenieHelper extension, and GenieHelper uses those cookies for all subsequent operations.
+
+## Setup
+
+<Steps>
+  <Step title="Open Platform Connections">
+    Navigate to **Platforms** in the left nav. Click **Add Platform**.
+  </Step>
+  <Step title="Select Instagram">
+    Choose Instagram from the platform grid.
+  </Step>
+  <Step title="Choose your auth method">
+    Select **Email / Password** to store credentials, or **Cookie only** to manage sessions manually. Cookie only is recommended for accounts where you have 2FA enabled.
+  </Step>
+  <Step title="Enter your credentials">
+    For email/password: enter your Instagram login email and password, and your `@handle` (profile URL username). All values are AES-256-GCM encrypted before being saved.
+  </Step>
+  <Step title="Save the connection">
+    GenieHelper creates a `platform_connections` record and enqueues an initial `scrape_profile` job. Profile stats will appear in the dashboard once the first scrape completes.
+  </Step>
+  <Step title="Provide session cookies if needed">
+    If the initial scrape triggers a HITL alert (common with Instagram), log in manually in your browser and import your cookies via the Cookie Sessions tab. Then re-trigger the scrape.
+  </Step>
+</Steps>
+
+## Data collected
+
+The `scrape_profile` job extracts the following from your Instagram profile:
+
+| Field | Source | Collection |
+|---|---|---|
+| Follower count | Profile page DOM | `platform_connections` |
+| Following count | Profile page DOM | `platform_connections` |
+| Post count | Profile page DOM | `platform_connections` |
+| Display name | Profile page DOM | `platform_connections` |
+| Bio text | Profile page DOM | `platform_connections` |
+| Verification status | Profile page DOM | `platform_connections` |
+| Post captions | Per-post extraction | `media_assets` |
+| Likes per post | Per-post extraction | `media_assets` |
+| Comments per post | Per-post extraction | `media_assets` |
+| Posted date | Per-post extraction | `media_assets` |
+
+The `scrape_post_performance` job records engagement snapshots:
+
+| Metric | Collection |
+|---|---|
+| Likes | `post_performance_snapshots` |
+| Comments | `post_performance_snapshots` |
+| Views | `post_performance_snapshots` |
+
+<Info>
+  Reel view counts and story metrics are not currently extracted — Instagram surfaces these only through its private API or the Creator Studio interface, which requires additional authentication flows not yet implemented.
+</Info>
+
+## Publishing
+
+GenieHelper can schedule and publish posts to Instagram via Stagehand browser automation. The `publish_post` BullMQ job navigates to the Instagram post compose interface, fills in the caption, attaches any media, and submits.
+
+<Warning>
+  Automated publishing to Instagram is more likely to trigger security checks than scraping. For publishing, use **Cookie only** auth with a fresh, manually-established session. Avoid publishing at very high frequency — Instagram rate-limits new posts per account per day.
+</Warning>
+
+Publishing is queued through the `scheduled_posts` collection. The post scheduler polls every 60 seconds and dispatches `publish_post` jobs for posts with a `scheduled_for` timestamp in the past.
+
+**Current publishing status:** Instagram automated posting is implemented as a stub in `operations/publish.js`. The platform is listed as `unsupported` for the `publish_post` job until the full Instagram compose flow is implemented (tracked under the H-series sprint). Until then, scheduling posts for Instagram queues the job but it will not publish automatically.
+
+## Rate limits and safe usage
+
+Instagram imposes strict rate limits and monitors accounts for unusual activity:
+
+- Scraping your own profile once every 6 hours (the default `runScrapeScheduler` interval) is low-risk
+- Avoid triggering manual scrapes repeatedly in a short window
+- If your account enters a checkpoint or gets temporarily restricted, stop all automation immediately, complete the manual verification Instagram requires, and wait 24 hours before re-enabling automated scraping
+- Cookie-based sessions expire; when they do, the next scrape will escalate to HITL
+
+## Session management
+
+Instagram session cookies are stored in `platform_sessions`:
+
+- Cookies are AES-256-GCM encrypted using the same envelope format as all other platform credentials
+- Active sessions are visible in the **Cookie Sessions** tab in Platform Connections
+- Revoking a session forces the next scrape to re-authenticate
+- Instagram sessions typically last days to weeks depending on account activity and login frequency
+
+## Connection health monitoring
+
+The `platform_health_checks` collection records each scrape outcome. The Platform Connections card reflects:
+
+| Status | Meaning |
+|---|---|
+| `connected` | Last scrape completed successfully |
+| `scraping` | A scrape job is currently running |
+| `hitl_required` | Instagram presented a checkpoint — your action is needed |
+| `failed` | Last scrape failed |
+| `pending_connection` | Profile saved, no successful scrape yet |
+
+## Resolving HITL alerts
+
+<Steps>
+  <Step title="Open the alert in the dashboard">
+    The Center Stage switches to `scrape_alert` mode. The alert explains what Instagram displayed (e.g., "Suspicious login detected — enter the code sent to your email").
+  </Step>
+  <Step title="Complete verification in your browser">
+    Open Instagram in your own browser. Complete any verification step Instagram requires — email code, phone code, or "This was me" confirmation.
+  </Step>
+  <Step title="Export fresh cookies">
+    After successful verification, use the GenieHelper browser extension to export your Instagram cookies, or paste the cookie string in the Cookie Sessions tab.
+  </Step>
+  <Step title="Re-trigger scraping">
+    Click **Scrape Now** on your Instagram profile card. GenieHelper uses the new cookies and should complete without hitting a checkpoint.
+  </Step>
+</Steps>
+
+<Tip>
+  If your Instagram account uses 2FA, always use **Cookie only** auth. Attempting automated password login on a 2FA-protected account will fail at the verification step and immediately create a HITL alert.
+</Tip>

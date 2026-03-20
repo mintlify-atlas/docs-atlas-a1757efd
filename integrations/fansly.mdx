@@ -1,0 +1,149 @@
+---
+title: 'Fansly'
+description: 'Connect your Fansly account to GenieHelper for automated stats scraping, post performance tracking, and session management.'
+---
+
+GenieHelper connects to Fansly using the same Stagehand browser automation stack as OnlyFans. Stagehand runs a real Chromium instance on your dedicated server, navigates Fansly as an authenticated user, and extracts stats and post metrics directly from the page.
+
+<Note>
+  All credentials and session cookies are encrypted with AES-256-GCM and stored in PostgreSQL. The encryption key never leaves your server — GenieHelper has no access to your plaintext credentials.
+</Note>
+
+## How the connection works
+
+Fansly does not offer a public API for creator analytics. GenieHelper reads your stats by controlling a real browser session: it navigates to your Fansly profile URL (`fansly.com/your-handle`), extracts the data rendered on the page, and writes it to your GenieHelper database.
+
+Like OnlyFans, Fansly actively detects headless browser fingerprints. GenieHelper mitigates detection by spoofing a realistic user-agent string and passing standard Chrome launch flags, but some login flows may still trigger challenges that require human intervention.
+
+<Warning>
+  If Fansly presents a CAPTCHA or requires SMS/email verification during login, the job cannot complete automatically. It escalates to the **HITL queue** (`hitl_action_queue`) and surfaces a `scrape_alert` in your dashboard. You must complete the login manually and provide fresh session cookies before scraping can resume.
+</Warning>
+
+## Authentication options
+
+Fansly supports the same three authentication modes as OnlyFans:
+
+<CardGroup cols={2}>
+  <Card title="Email / Password" icon="envelope">
+    GenieHelper logs in using your Fansly email and password. Your profile `@handle` (URL username) is stored separately from your login email.
+  </Card>
+  <Card title="X / Twitter OAuth" icon="x-twitter">
+    GenieHelper clicks "Sign in with X" on the Fansly login page and authenticates via your X/Twitter credentials. 2FA must be disabled on X for this to work automatically.
+  </Card>
+  <Card title="Cookie only" icon="cookie">
+    No password is stored. You log in manually and export session cookies via the browser extension. GenieHelper reuses those cookies for all future scrapes.
+  </Card>
+  <Card title="Cookie injection" icon="bolt">
+    When a valid session exists in `platform_sessions`, GenieHelper injects those cookies before navigating — skipping the login flow entirely and reducing the risk of bot detection.
+  </Card>
+</CardGroup>
+
+## Setup
+
+<Steps>
+  <Step title="Open Platform Connections">
+    Navigate to **Platforms** in the left nav rail. Click **Add Platform**.
+  </Step>
+  <Step title="Select Fansly">
+    Choose Fansly from the platform grid. Multiple platforms can be connected in a single flow.
+  </Step>
+  <Step title="Choose your authentication method">
+    Select Email/Password, X/Twitter OAuth, or Cookie only. If you choose cookie-only, enter your `@handle` so GenieHelper knows which profile URL to navigate to.
+  </Step>
+  <Step title="Enter credentials">
+    Fill in the required fields. All credential values are AES-256-GCM encrypted before leaving your browser and stored only in your PostgreSQL vault.
+  </Step>
+  <Step title="Save and verify the connection">
+    GenieHelper creates a `platform_connections` record with `status: pending_connection` and immediately enqueues a `scrape_profile` job. Once the job completes, the status updates to `connected` and your stats populate.
+  </Step>
+</Steps>
+
+## Data collected
+
+The `scrape_profile` job extracts the following from your Fansly profile page:
+
+| Field | Source | Collection |
+|---|---|---|
+| Follower count | Profile page DOM | `platform_connections` |
+| Following count | Profile page DOM | `platform_connections` |
+| Post count | Profile page DOM | `platform_connections` |
+| Display name | Profile page DOM | `platform_connections` |
+| Subscription price | Profile page DOM | `platform_connections` |
+| Bio text | Profile page DOM | `platform_connections` |
+| Post caption | Per-post extraction | `media_assets` |
+| Likes per post | Per-post extraction | `media_assets` |
+| Comments per post | Per-post extraction | `media_assets` |
+| PPV flag and price | Per-post extraction | `media_assets` |
+| Posted date | Per-post extraction | `media_assets` |
+
+The `scrape_post_performance` job collects live engagement metrics for published posts:
+
+| Metric | Collection |
+|---|---|
+| Likes | `post_performance_snapshots` |
+| Comments | `post_performance_snapshots` |
+| Views | `post_performance_snapshots` |
+| Tips amount | `post_performance_snapshots` |
+
+Each snapshot write triggers the **"PUB: Snapshot Evaluated"** Directus Flow, which scores the post's performance band and can fire downstream automation rules.
+
+## BullMQ jobs
+
+Fansly scraping runs through two job types on the `scrape-jobs` queue:
+
+| Job | Trigger | What it does |
+|---|---|---|
+| `scrape_profile` | Manual from dashboard, or every 6h via `runScrapeScheduler` | Scrapes profile stats and up to 20 recent posts |
+| `scrape_post_performance` | Manually triggered or via post scheduler | Fetches live metrics for a specific published post |
+
+BullMQ enforces `concurrency:1` — only one Stagehand browser session runs at a time, preventing RAM exhaustion on the 16GB server.
+
+## Session management
+
+Fansly session cookies are stored encrypted in `platform_sessions`:
+
+- Cookies are serialized to JSON, then encrypted with AES-256-GCM
+- `status` is `active` until you revoke the session or it expires
+- The **Cookie Sessions** tab in Platform Connections shows all active Fansly sessions
+- Sessions are scoped by `creator_profile_id` and `platform` — multiple Fansly accounts can be managed independently
+
+To add cookies manually (useful after resolving a HITL challenge):
+
+1. Log in to Fansly in your own browser
+2. Use the GenieHelper browser extension to export cookies, or copy the cookie header string
+3. Paste it in the **Cookie Sessions** tab and click **Import**
+
+## Connection health monitoring
+
+The `platform_health_checks` collection records the outcome of every scrape attempt. The connection card in Platform Connections reflects the current status:
+
+| Status | Meaning |
+|---|---|
+| `connected` | Last scrape succeeded |
+| `scraping` | A scrape job is currently running |
+| `hitl_required` | Fansly presented a challenge — action required |
+| `failed` | Last scrape failed |
+| `pending_connection` | Profile saved but no successful scrape yet |
+
+## Resolving HITL alerts
+
+When Fansly blocks automated login, the dashboard switches to `scrape_alert` mode and the TopCueRail turns amber.
+
+<Steps>
+  <Step title="Acknowledge the alert">
+    The Center Stage will display the HITL alert with the reason (e.g., "Login required — SMS verification detected").
+  </Step>
+  <Step title="Log in to Fansly manually">
+    Open Fansly in your browser, complete any verification steps, and confirm you are fully logged in.
+  </Step>
+  <Step title="Export your session cookies">
+    Use the GenieHelper extension or the manual cookie import form in the Cookie Sessions tab.
+  </Step>
+  <Step title="Re-trigger the scrape">
+    Click **Scrape Now** on your Fansly profile card. GenieHelper injects the fresh cookies and completes the scrape without hitting the login page.
+  </Step>
+</Steps>
+
+<Tip>
+  For Fansly accounts with aggressive bot-detection, Cookie only auth is the most reliable approach. You take the risk of login detection off the table entirely by handling authentication yourself.
+</Tip>

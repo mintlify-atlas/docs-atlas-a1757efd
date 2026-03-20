@@ -1,0 +1,188 @@
+---
+title: "Contributing"
+description: "Development setup, code standards, commit conventions, and branch strategy for GenieHelper contributors."
+---
+
+GenieHelper is built on open-source primitives and welcomes contributions from developers who want to improve the platform. This guide covers everything you need to get a local development environment running and contributing code.
+
+## Prerequisites
+
+<Steps>
+  <Step title="Install Node.js >= 18">
+    The server and dashboard both require Node.js 18 or later. Use `node --version` to confirm.
+    
+    ```bash
+    node --version  # must be >= 18.0.0
+    ```
+  </Step>
+  <Step title="Install Python 3.10+">
+    Python is required for `surgical_context.py` (JIT skill hydration) and the Crawl4AI document collector.
+    
+    ```bash
+    python3 --version  # must be >= 3.10
+    ```
+  </Step>
+  <Step title="Install PostgreSQL 16">
+    The primary database. Install the `pgvector` and `AGE` extensions. A Docker Compose file is provided at `cms/docker-compose.yml`.
+    
+    ```bash
+    docker compose -f cms/docker-compose.yml up -d
+    ```
+  </Step>
+  <Step title="Install Redis">
+    Required by BullMQ for the job queue. The same Docker Compose file starts Redis alongside PostgreSQL and Directus.
+  </Step>
+  <Step title="Install Ollama">
+    Local LLM inference. Install Ollama and pull the three models used by GenieHelper:
+    
+    ```bash
+    ollama pull dolphin3:8b-llama3.1-q4_K_M
+    ollama pull dolphin-mistral:7b
+    ollama pull qwen2.5:latest
+    ```
+  </Step>
+</Steps>
+
+## Required services
+
+All services are managed by PM2 in production. For local development, you can start them individually or use the PM2 ecosystem file.
+
+| Service | Port | Start command |
+|---------|------|---------------|
+| AnythingLLM server | 3001 | `cd server && node index.js` |
+| Directus CMS | 8055 | `docker compose -f cms/docker-compose.yml up` |
+| Dashboard | 3100 | `cd dashboard && npm run dev` |
+| Media Worker | — | `cd media-worker && node index.js` |
+| Ollama | 11434 | `ollama serve` (systemd on Linux) |
+
+<Note>
+  The Stagehand browser automation server (port 3002) and PinchTab are only required if you are working on onboarding or platform scraping features.
+</Note>
+
+## Environment variables
+
+Create `server/.env` by copying `server/.env.example`. The following variables are required:
+
+| Variable | Description |
+|----------|-------------|
+| `CREDENTIALS_ENC_KEY_B64` | Base64-encoded 256-bit AES key for platform credential encryption. Generate with: `openssl rand -base64 32` |
+| `DIRECTUS_ADMIN_TOKEN` | Directus admin token. Used only by `register.js` and `rbacSync.js` (pre-auth flows). |
+| `MCP_SERVICE_TOKEN` | Scoped Directus service token used by all other server-to-Directus calls. |
+| `DEFAULT_NEW_USER_TIER` | Tier assigned to new registrations. Default: `pro`. Valid values: `starter`, `creator`, `pro`, `studio`. |
+| `RBAC_SYNC_WEBHOOK_SECRET` | Shared secret for the Directus → `rbacSync` webhook. Also used by `credentials.js` for server-to-server auth. |
+
+<Warning>
+  Never commit `.env` files. `CREDENTIALS_ENC_KEY_B64` protects all stored platform credentials. If this key is lost or rotated, all stored credentials become unrecoverable.
+</Warning>
+
+Optional variables that enable additional functionality:
+
+| Variable | Description |
+|----------|-------------|
+| `ANTHROPIC_API_KEY` | Enables the PowerAdmin Claude bypass for admin users in `genieChat.js`. Not required for regular creator flows. |
+| `ANYTHINGLLM_API_KEY` | API key for the AnythingLLM workspace API (auto-generated at setup). |
+| `LLM_URL` | Override for the AnythingLLM internal URL. Default: `http://127.0.0.1:3001`. |
+
+## Code standards
+
+### Linting and formatting
+
+The project uses ESLint + Prettier. Run checks before pushing:
+
+```bash
+npm run lint       # ESLint
+npm run format     # Prettier
+```
+
+No warnings are allowed in CI. Fix all lint issues before opening a pull request.
+
+### Documentation
+
+All exported functions and modules require JSDoc comments:
+
+```javascript
+/**
+ * Encrypt a JSON object with AES-256-GCM.
+ * @param {object} data - The object to encrypt
+ * @returns {string} Base64-encoded encrypted blob including IV and auth tag
+ */
+function encryptJSON(data) { ... }
+```
+
+### Directus access rules
+
+<Warning>
+  Never call Directus directly with raw `fetch()` from business logic. All Directus reads and writes in server code must go through:
+  - `serviceClient` from `server/utils/directusClient.js` (standard case)
+  - `adminFetch` from `server/utils/directusClient.js` (permitted exceptions: `credentials.js`, `register.js`, `rbacSync.js`)
+  - `cms.directus` MCP tools (for writes from agent flows)
+</Warning>
+
+This constraint exists to enforce centralized auth, consistent error handling, and auditability.
+
+## Commit conventions
+
+All commits follow the Conventional Commits format:
+
+```
+type(scope): description
+```
+
+**Types:**
+
+| Type | When to use |
+|------|-------------|
+| `feat` | New feature or capability |
+| `fix` | Bug fix |
+| `docs` | Documentation changes |
+| `chore` | Dependency updates, config changes, tooling |
+| `refactor` | Code restructure with no behavior change |
+| `test` | Adding or updating tests |
+| `perf` | Performance improvement |
+
+**Scopes:**
+
+`mcp`, `auth`, `dashboard`, `directus`, `bullmq`, `stagehand`, `ollama`, `pinchtab`, `nginx`, `onboarding`
+
+**Examples:**
+
+```
+feat(mcp): add process_media tool to directus MCP server
+fix(auth): resolve JWT refresh race condition in dashboard
+docs(readme): update server/ README with new MCP tools
+chore(deps): vendor stagehand fork v0.4.2
+refactor(queue): split media-worker into operations/ modules
+```
+
+## Branch strategy
+
+| Branch | Purpose |
+|--------|---------|
+| `main` | Production — deployed on the server |
+| `develop` | Integration — all feature branches merge here first |
+| `feature/{ticket}-{description}` | New features (e.g., `feature/G-2-skill-rewrites`) |
+| `fix/{ticket}-{description}` | Bug fixes (e.g., `fix/BUG-004-jwt-refresh`) |
+| `hotfix/{description}` | Emergency production fixes that bypass `develop` |
+
+All pull requests target `develop`. Merges to `main` are done by the maintainer after integration testing.
+
+## Where help is needed
+
+These are the open work items where external contributions are most valuable:
+
+<CardGroup cols={2}>
+  <Card title="G-2: Skill Rewrites" icon="code">
+    28 remaining backend skill thin-rewrites into the canonical 3-layer format (context → tools → output schema).
+  </Card>
+  <Card title="FP-Growth Mining" icon="chart-network">
+    Cross-user pattern mining in `memory/consolidation/cross_user/`. Requires knowledge of FP-Growth algorithms.
+  </Card>
+  <Card title="H-series: Platform Publishing" icon="send">
+    Automated post publishing to OnlyFans, Fansly, and Instagram via PinchTab browser automation.
+  </Card>
+  <Card title="J-series: E2E Tests" icon="test-tube">
+    End-to-end test suite covering the full agent pipeline, onboarding flow, and media worker.
+  </Card>
+</CardGroup>
+
+See the [roadmap](/developer/roadmap) for full detail on all open work items.

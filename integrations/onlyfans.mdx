@@ -1,0 +1,146 @@
+---
+title: 'OnlyFans'
+description: 'Connect your OnlyFans account to GenieHelper for automated stats scraping, subscriber tracking, PPV performance, and session management.'
+---
+
+GenieHelper connects to OnlyFans through Stagehand — a Playwright-based browser automation layer that runs entirely on your dedicated server. There is no third-party scraping service, no cloud relay, and no data leaving your infrastructure.
+
+<Note>
+  All credentials are encrypted with AES-256-GCM before being stored in PostgreSQL. The encryption key (`CREDENTIALS_ENC_KEY_B64`) never leaves your server and is never transmitted to GenieHelper infrastructure.
+</Note>
+
+## How the connection works
+
+GenieHelper controls a real Chromium browser (via Playwright) on the server. It navigates OnlyFans exactly as a logged-in user would — loading your profile page, reading stats from the DOM, and extracting post metrics. No private API keys are required.
+
+Because OnlyFans actively detects and blocks headless Chrome sessions, GenieHelper uses two complementary strategies:
+
+<CardGroup cols={2}>
+  <Card title="Cookie injection" icon="cookie">
+    If you have an active session in the `platform_sessions` collection, GenieHelper injects those encrypted cookies into the browser before navigating. This avoids the login flow entirely and is the preferred path.
+  </Card>
+  <Card title="Credential login" icon="lock">
+    If no valid session cookie exists, GenieHelper uses your stored email/password (or X/Twitter OAuth) to log in automatically and establish a new session.
+  </Card>
+</CardGroup>
+
+<Warning>
+  OnlyFans blocks many headless Chrome fingerprints. If automated login triggers a CAPTCHA, SMS verification, or other challenge, the job escalates to the **HITL queue** (`hitl_action_queue`). You will receive a `scrape_alert` notification in the dashboard and must complete the login manually. GenieHelper cannot bypass 2FA or CAPTCHA challenges automatically.
+</Warning>
+
+## Setup
+
+<Steps>
+  <Step title="Open Platform Connections">
+    Navigate to **Platforms** in the left nav rail. Click **Add Platform**.
+  </Step>
+  <Step title="Select OnlyFans">
+    Choose OnlyFans from the platform grid. You can select multiple platforms in the same flow.
+  </Step>
+  <Step title="Choose an authentication method">
+    Three options are available:
+    - **Email / Password** — GenieHelper logs in with your OnlyFans email and password. Enter your profile `@handle` (used in your profile URL) separately from your login email.
+    - **X / Twitter OAuth** — GenieHelper clicks "Sign in with X" on the OnlyFans login page and authenticates with your X/Twitter credentials. Requires 2FA to be disabled on your X account.
+    - **Cookie only** — No password stored. You provide session cookies manually using the browser extension after logging in yourself.
+  </Step>
+  <Step title="Enter your credentials">
+    Fill in the required fields. All values are AES-256-GCM encrypted client-side before transmission and stored in the PostgreSQL vault.
+  </Step>
+  <Step title="Save and trigger an initial scrape">
+    After saving, GenieHelper creates a `platform_connections` record and enqueues a `scrape_profile` BullMQ job. The initial scrape runs within seconds and populates your stats dashboard.
+  </Step>
+</Steps>
+
+## Data collected
+
+The `scrape_profile` job extracts the following from your OnlyFans profile page:
+
+| Field | Source | Collection |
+|---|---|---|
+| Follower count | Profile page DOM | `platform_connections` |
+| Following count | Profile page DOM | `platform_connections` |
+| Post count | Profile page DOM | `platform_connections` |
+| Display name | Profile page DOM | `platform_connections` |
+| Subscription price | Profile page DOM | `platform_connections` |
+| Verification status | Profile page DOM | `platform_connections` |
+| Bio text | Profile page DOM | `platform_connections` |
+| Post caption | Per-post extraction | `media_assets` |
+| Likes per post | Per-post extraction | `media_assets` |
+| Comments per post | Per-post extraction | `media_assets` |
+| PPV flag and price | Per-post extraction | `media_assets` |
+| Posted date | Per-post extraction | `media_assets` |
+
+The `scrape_post_performance` job collects live engagement metrics for already-published posts:
+
+| Metric | Collection |
+|---|---|
+| Likes | `post_performance_snapshots` |
+| Comments | `post_performance_snapshots` |
+| Views | `post_performance_snapshots` |
+| Tips amount | `post_performance_snapshots` |
+| PPV unlocks | `post_performance_snapshots` |
+
+After each performance snapshot is written, the Directus Flow **"PUB: Snapshot Evaluated"** fires automatically to score the post's performance band.
+
+## BullMQ jobs
+
+All OnlyFans scraping runs through two job types on the `scrape-jobs` queue:
+
+| Job | Trigger | What it does |
+|---|---|---|
+| `scrape_profile` | Manual from dashboard, or every 6h via `runScrapeScheduler` | Scrapes profile stats and up to 20 recent posts |
+| `scrape_post_performance` | Manually triggered or via post scheduler | Fetches live metrics for a specific published post |
+
+BullMQ runs at `concurrency:1` to prevent simultaneous Stagehand sessions from exhausting server RAM.
+
+## Session management
+
+After a successful login, GenieHelper stores your browser cookies in the `platform_sessions` collection:
+
+- Cookies are encrypted with AES-256-GCM using the same key as credentials
+- The `status` field tracks whether a session is `active` or `revoked`
+- You can view and revoke active sessions from the **Cookie Sessions** tab in Platform Connections
+- To manually import cookies (for cookie-only auth), use the browser extension or paste a cookie string in the Sessions tab
+
+Sessions are scoped per creator profile and per platform — `platform_sessions` is filtered by both `creator_profile_id` and `platform` when injecting cookies.
+
+## Connection health monitoring
+
+GenieHelper tracks the health of your OnlyFans connection in the `platform_health_checks` collection. Each scrape job writes a health record with the result status. The **TopCueRail** in the dashboard reflects connection health:
+
+| Status | Meaning |
+|---|---|
+| `connected` | Last scrape succeeded |
+| `scraping` | A scrape job is currently running |
+| `hitl_required` | Login challenge was encountered — your action is needed |
+| `failed` | Last scrape failed — check logs |
+| `pending_connection` | Profile saved but not yet scraped |
+
+## HITL — human-in-the-loop login
+
+When OnlyFans presents a login challenge that Stagehand cannot handle automatically (CAPTCHA, SMS code, email verification), the scrape job does the following:
+
+1. Creates a record in `hitl_sessions` with `status: pending` and a reason message
+2. Sets `scrape_status: hitl_required` on your `platform_connections` record
+3. Surfaces a `scrape_alert` in the dashboard Center Stage
+
+To resolve a HITL alert:
+
+<Steps>
+  <Step title="Open the alert">
+    The dashboard will switch to `scrape_alert` mode automatically. Click the alert to see which platform needs attention.
+  </Step>
+  <Step title="Log in manually in your browser">
+    Open OnlyFans in your own browser, complete the login challenge, and ensure you are fully authenticated.
+  </Step>
+  <Step title="Capture your session cookies">
+    Use the GenieHelper browser extension to export your session cookies, or paste them manually in the Cookie Sessions tab.
+  </Step>
+  <Step title="Trigger a new scrape">
+    Return to Platform Connections and click **Scrape Now** on your OnlyFans profile card. GenieHelper will use the new cookies and proceed without hitting the login flow.
+  </Step>
+</Steps>
+
+<Tip>
+  Using **Cookie only** auth from the start avoids credential storage entirely. You log in manually once, capture cookies via the extension, and GenieHelper reuses that authenticated session for all future scrapes.
+</Tip>

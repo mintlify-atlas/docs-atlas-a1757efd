@@ -1,0 +1,204 @@
+---
+title: taxonomy.core
+description: 7-tool plugin for taxonomy graph operations — semantic search, LLM-assisted content tagging, term mapping, graph ingestion, rebuild, pruning, and Hebbian edge reinforcement across 3,205 nodes.
+---
+
+**Plugin ID:** `taxonomy.core` | **Version:** 1.1.0 | **Tools:** 7
+
+The `taxonomy.core` plugin operates against a 3,205-node taxonomy graph (`Nodes/Universe/taxonomy_graph.json`) that classifies adult content across 18 super-concepts. It handles content tagging, term normalization, graph mutation, and the nightly Hebbian learning cycle. The graph is loaded once at first call and cached in module scope.
+
+## Graph structure
+
+The taxonomy graph has two top-level arrays: `nodes` and `edges`.
+
+**Node types:**
+
+| Type | Description | Indexed? |
+|---|---|---|
+| `super_concept` | 18 top-level classification buckets | No |
+| `tag` | Individual content tags with usage counts | Yes |
+| `category` | Site-level category groupings | Yes |
+| `site` | Source adult content sites | No |
+
+**Edge types:**
+
+| Type | Description |
+|---|---|
+| `HAS_TAG` | Site → Tag |
+| `HAS_CATEGORY` | Site → Category |
+| `USES_TAG` | Category → Tag |
+| `CO_OCCURS` | Tag → Tag co-occurrence (Hebbian, weighted) |
+| `MAPS_TO_CONCEPT` | Tag → SuperConcept |
+
+Total edges: ~11,298 + 3,688 `MAPS_TO_CONCEPT` edges = ~14,986 edges.
+
+## 18 super-concepts
+
+Super-concepts are the top-level classification buckets. Every content tag maps to one or more super-concepts via `MAPS_TO_CONCEPT` edges.
+
+<AccordionGroup>
+  <Accordion title="View all 18 super-concepts">
+    | ID | Label |
+    |---|---|
+    | `sc:demographics` | Demographics |
+    | `sc:ethnicity` | Ethnicity & Race |
+    | `sc:body_type` | Body Type |
+    | `sc:appearance` | Appearance & Style |
+    | `sc:acts_oral` | Acts: Oral |
+    | `sc:acts_penetration` | Acts: Penetration |
+    | `sc:acts_climax` | Acts: Climax |
+    | `sc:kink_bdsm` | Kink & BDSM |
+    | `sc:fetish_body` | Fetish: Body |
+    | `sc:orientation` | Sexual Orientation |
+    | `sc:group_dynamics` | Group Dynamics |
+    | `sc:roleplay` | Roleplay & Fantasy |
+    | `sc:setting` | Settings & Locations |
+    | `sc:production_style` | Production Style |
+    | `sc:content_format` | Content Format |
+    | `sc:performance_type` | Performance Type |
+    | `sc:general_adult` | General Adult Content |
+    | `sc:creator_category` | Creator Category |
+  </Accordion>
+</AccordionGroup>
+
+## Compound tag handling
+
+The search index stores compound tags both as full hyphenated terms and as individual tokens:
+
+| Tag | Also searchable as |
+|---|---|
+| `big-ass` | `big`, `ass` |
+| `18-girl` | `18`, `girl` |
+| `foot-fetish` | `foot`, `fetish` |
+| `gay-man` | `gay`, `man` |
+
+LLM output is normalized before graph lookup: spaces become hyphens (`"big ass"` → `"big-ass"`), multi-word phrases are slugified (`"18 year girl"` → `"18-year-girl"`).
+
+## Tools
+
+### `taxonomy.search` — find taxonomy nodes
+
+Searches the in-memory index by label token. Results are ranked by match quality (exact > prefix > substring) and then by usage count.
+
+```
+taxonomy.search("brunette")
+└─ returns ranked matches: brunette (exact, count: 4.2M), brunette-teen (prefix), ...
+```
+
+Use this to look up canonical tag names before applying them to content, or to discover related tags for a given topic.
+
+### `taxonomy.tag-content` — LLM-assisted tagging
+
+The primary content classification tool. Takes a content description (or raw metadata), sends it to Ollama for tag extraction, normalizes the LLM output, validates each tag against the graph, and returns a tiered result.
+
+**Pipeline:**
+```
+content description
+  └─ Ollama generate (extract tags as comma-separated list)
+  └─ normalize output (lowercase, spaces → hyphens)
+  └─ validate each tag against taxonomy index
+  └─ split into primary/secondary/tertiary by usage count threshold
+```
+
+**Response shape:**
+```json
+{
+  "primary":   ["big-ass", "amateur"],
+  "secondary": ["latina", "homemade"],
+  "tertiary":  ["voyeur", "foot-fetish"],
+  "validated": [
+    {
+      "tag": "amateur",
+      "input": "amateur",
+      "type": "tag",
+      "count": 12345,
+      "super_concept": { "id": "sc:production_style", "label": "Production Style" }
+    }
+  ],
+  "unmatched": ["raw-llm-tag-not-in-graph"],
+  "llm_tags":  ["raw llm output before validation"]
+}
+```
+
+**Tier thresholds:**
+- `primary` — count > 500,000 (high-frequency, high-discoverability tags)
+- `secondary` — count 50,000–500,000
+- `tertiary` — count < 50,000 (niche, high-specificity tags)
+
+<Tip>
+Store all three tiers in `user_nodes` when classifying a creator's content. Primary tags drive platform discoverability; tertiary tags drive niche audience targeting and correlation learning.
+</Tip>
+
+### `taxonomy.map-term` — resolve to super-concept
+
+Resolves an arbitrary term (which may or may not exist in the graph) to its canonical `super_concept` via `MAPS_TO_CONCEPT` edges. Falls back to `representative_tags` matching if no direct edge exists.
+
+Use this when ingesting external data with platform-specific tag vocabularies that need to be normalized to GenieHelper's taxonomy.
+
+### `taxonomy.ingest-source` — add to graph
+
+Adds new nodes and edges to the taxonomy graph. Deduplicates by node label before inserting. Writes atomically via rename-on-tmp to prevent partial writes.
+
+**Parameters:**
+- `nodes` — array of node objects `{ id, label, type, count? }`
+- `edges` — array of edge objects `{ from, to, type, weight? }`
+- `dry_run` — (default: `true`) if true, returns what would be added without writing
+
+<Warning>
+`dry_run` defaults to `true`. You must explicitly set `dry_run: false` to persist changes. Always review the dry run output before committing.
+</Warning>
+
+### `taxonomy.rebuild-graph` — invalidate cache and reload
+
+Invalidates the in-memory `_graph` and `_index` caches and forces a full reload from `taxonomy_graph.json` on the next call. Returns node count, edge count, and index entry count post-reload.
+
+Call this after any external modification to `taxonomy_graph.json` or after a large batch ingest.
+
+### `taxonomy.prune` — remove low-signal nodes
+
+Removes orphaned nodes (zero edges) and nodes below a `min_count` threshold. Writes atomically. Calls `invalidateCache()` after write to force reload on next access.
+
+**Parameters:**
+- `min_count` — minimum usage count to retain a node (default: 1)
+- `dry_run` — (default: `true`) returns removal plan without writing
+
+### `taxonomy.strengthen` — Hebbian edge reinforcement
+
+Boosts `CO_OCCURS` edge weights for a set of co-appearing tags, implementing Hebbian co-occurrence learning ("neurons that fire together, wire together"). Creates new `CO_OCCURS` edges if none exist between the provided tags.
+
+**Parameters:**
+- `tags` — array of tag labels that appeared together in a piece of content
+- `delta` — weight increment (default: 1)
+- `persist` — if true, mutates `_graph` in-place and writes to disk
+
+This tool is called by the nightly Hebbian cron (`scripts/cron/taxonomy-hebbian.mjs`) with a global decay of 0.995 applied to all `CO_OCCURS` edges after boosting.
+
+## Hebbian nightly cron
+
+A separate cron job runs at 3 AM daily to propagate engagement signals into the graph:
+
+```
+1. Fetch user_nodes updated in last 24h from Directus
+2. Group tags by creator
+3. taxonomy.strengthen for each co-occurring tag pair
+4. Apply global decay (0.995) to all CO_OCCURS edges
+5. Prune edges below min_weight
+6. Persist atomically
+```
+
+This keeps the `CO_OCCURS` edge weights aligned with actual creator content patterns rather than generic platform co-occurrence data.
+
+## Integration with synaptic propagation
+
+The taxonomy graph feeds directly into the memory layer's synaptic propagation retrieval. When `memory.recall`'s `activate_skills` pipeline propagates a stimulus query, `CO_OCCURS` edges from the taxonomy graph act as associative pathways — a tag activated by a content query pulls in its strongly co-occurring neighbors, widening the skill activation net.
+
+## Configuration
+
+| Setting | Value |
+|---|---|
+| Graph path | `Nodes/Universe/taxonomy_graph.json` |
+| Nodes | 3,205 |
+| Super-concepts | 18 |
+| Timeout | 60,000 ms (accommodates Ollama calls in `tag-content`) |
+| Concurrency | 3 |
+| Idempotent | Yes |
